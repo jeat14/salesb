@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # Initialize bot with your token
-TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
+TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
 bot = telebot.TeleBot(TOKEN)
 
 # Admin user IDs
@@ -208,8 +208,7 @@ def send_welcome(message):
         markup.row('Admin Panel')
     
     bot.reply_to(message, 
-                 f"Welcome to the Digital Shop, {message.from_user.first_name}!\n\n"
-                 "Browse products and buy instantly with CashApp or Crypto!",
+                 f"Welcome to Retrinity CC Shop, {message.from_user.first_name}!",
                  reply_markup=markup)
 
 # Admin Panel
@@ -254,7 +253,13 @@ def browse_products(message):
     
     for product in products:
         product_id, name, description, price, file_path, file_name, created_at, active = product
-        button_text = f"{name} - {format_price(price)}"
+        
+        # Show first 6 characters for txt files
+        preview = ""
+        if file_name.lower().endswith('.txt') and description:
+            preview = f" ({description[:6]}...)"
+        
+        button_text = f"{name}{preview} - {format_price(price)}"
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
     
     bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
@@ -404,7 +409,13 @@ def test_mode(message):
     
     for product in products:
         product_id, name, description, price, file_path, file_name, created_at, active = product
-        button_text = f"Test: {name} - {format_price(price)}"
+        
+        # Show first 6 characters for txt files in test mode too
+        preview = ""
+        if file_name.lower().endswith('.txt') and description:
+            preview = f" ({description[:6]}...)"
+        
+        button_text = f"Test: {name}{preview} - {format_price(price)}"
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"test_{product_id}"))
     
     markup.row(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="back_admin"))
@@ -436,19 +447,37 @@ def handle_file_upload(message):
             bot.send_message(message.chat.id, f"Error: {error}")
             return
         
+        # For txt files, read content automatically
+        description = ""
+        if message.document.file_name.lower().endswith('.txt'):
+            try:
+                description = file_content.decode('utf-8')
+            except:
+                description = "Text file content"
+        
         # Store file info and wait for product details
         user_states[message.from_user.id] = {
             'state': 'waiting_product_info',
             'file_path': file_path,
-            'file_name': message.document.file_name
+            'file_name': message.document.file_name,
+            'auto_description': description
         }
         
-        bot.send_message(message.chat.id,
-                         f"File uploaded: {message.document.file_name}\n\n"
-                         "Now send product info:\n"
-                         "Name | Price | Description\n\n"
-                         "Example:\n"
-                         "Python Guide | 19.99 | Complete tutorial")
+        if description:
+            bot.send_message(message.chat.id,
+                             f"File uploaded: {message.document.file_name}\n\n"
+                             f"Preview: {description[:50]}...\n\n"
+                             "Now send product info:\n"
+                             "Name | Price\n\n"
+                             "Example:\n"
+                             "Python Guide | 19.99")
+        else:
+            bot.send_message(message.chat.id,
+                             f"File uploaded: {message.document.file_name}\n\n"
+                             "Now send product info:\n"
+                             "Name | Price | Description\n\n"
+                             "Example:\n"
+                             "Python Guide | 19.99 | Complete tutorial")
         
     except Exception as e:
         debug_print(f"File upload error: {str(e)}")
@@ -465,13 +494,25 @@ def handle_text_messages(message):
     if isinstance(user_states.get(user_id), dict) and user_states[user_id].get('state') == 'waiting_product_info':
         parts = text.split('|')
         
-        if len(parts) != 3:
-            bot.send_message(message.chat.id, "Invalid format. Use:\nName | Price | Description")
-            return
+        # Check if we have auto description from txt file
+        auto_description = user_states[user_id].get('auto_description', '')
         
-        name = parts[0].strip()
-        price_str = parts[1].strip()
-        description = parts[2].strip()
+        if auto_description:
+            # For txt files: Name | Price
+            if len(parts) != 2:
+                bot.send_message(message.chat.id, "Invalid format. Use:\nName | Price")
+                return
+            name = parts[0].strip()
+            price_str = parts[1].strip()
+            description = auto_description
+        else:
+            # For other files: Name | Price | Description
+            if len(parts) != 3:
+                bot.send_message(message.chat.id, "Invalid format. Use:\nName | Price | Description")
+                return
+            name = parts[0].strip()
+            price_str = parts[1].strip()
+            description = parts[2].strip()
         
         try:
             price = float(price_str)
