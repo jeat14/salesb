@@ -7,11 +7,14 @@ import json
 from datetime import datetime
 
 # Initialize bot with your token
-TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
+TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
 bot = telebot.TeleBot(TOKEN)
 
 # Admin user IDs
-ADMIN_IDS = [7481885595]  # @packoa's ID
+ADMIN_IDS = [
+    7481885595,  # @packoa's ID
+    # Add @xenslol's ID here when they send /start to the bot
+]
 
 # Debug mode
 DEBUG = True
@@ -66,6 +69,14 @@ user_states = {}
 def debug_print(message):
     if DEBUG:
         print(f"DEBUG: {message}")
+
+def check_and_add_admin(user_id, username):
+    """Check if user should be admin and add if needed"""
+    if username == "xenslol" and user_id not in ADMIN_IDS:
+        ADMIN_IDS.append(user_id)
+        debug_print(f"Added @{username} (ID: {user_id}) as admin")
+        return True
+    return False
 
 def format_price(price):
     return f"${price:.2f}"
@@ -176,6 +187,10 @@ def get_file_by_token(access_token):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     debug_print(f"Start command from user {message.from_user.id}")
+    
+    # Check if user should be added as admin
+    username = message.from_user.username or ""
+    check_and_add_admin(message.from_user.id, username)
     
     # Check if downloading file
     if len(message.text.split()) > 1:
