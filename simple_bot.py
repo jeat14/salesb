@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 
 # Initialize bot with your token
-TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
+TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX1'
 bot = telebot.TeleBot(TOKEN)
 
 # Admin user IDs
