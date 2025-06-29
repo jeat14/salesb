@@ -39,7 +39,7 @@ def init_database():
             file_path TEXT NOT NULL,
             file_name TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            active INTEGER DEFAULT 1
+            active INTEGER DEFAULT 1 -- 1 for active, 0 for inactive/removed
         )
     ''')
     cursor.execute('''
@@ -73,12 +73,24 @@ def add_product_to_db(name, description, price, file_path, file_name):
     return product_id
 
 def get_products():
+    """Retrieves all ACTIVE products from the database."""
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM products WHERE active = 1 ORDER BY created_at DESC')
     products = cursor.fetchall()
     conn.close()
     return products
+
+# --- NEW DATABASE FUNCTION ---
+def deactivate_product_in_db(product_id):
+    """Deactivates a product by setting its 'active' flag to 0."""
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE products SET active = 0 WHERE id = ?", (product_id,))
+    conn.commit()
+    rows_affected = cursor.rowcount
+    conn.close()
+    return rows_affected > 0
 
 def get_product(product_id):
     conn = sqlite3.connect('shop.db', check_same_thread=False)
@@ -160,7 +172,6 @@ def save_file(file_content, original_filename):
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Handles the /start command."""
     debug_print(f"Start command from user {message.from_user.id}")
     if len(message.text.split()) > 1:
         token = message.text.split()[1]
@@ -180,8 +191,10 @@ def admin_panel(message):
         bot.reply_to(message, "Access denied.")
         return
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row('Add Product', 'View Orders')
-    markup.row('🧪 Test Mode', 'Back to Shop')
+    # --- ADDED 'Remove Product' BUTTON ---
+    markup.row('Add Product', 'Remove Product')
+    markup.row('View Orders', '🧪 Test Mode')
+    markup.row('Back to Shop')
     user_states.pop(message.from_user.id, None)
     bot.send_message(message.chat.id, "Admin Panel\n\nSelect an option:", reply_markup=markup)
 
@@ -191,6 +204,26 @@ def add_product_start(message):
         return
     user_states[message.from_user.id] = 'waiting_file'
     bot.send_message(message.chat.id, "Please upload the .txt file you want to sell.")
+
+# --- NEW HANDLER FOR 'Remove Product' ---
+@bot.message_handler(func=lambda message: message.text == 'Remove Product')
+def remove_product_start(message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    products = get_products()
+    if not products:
+        bot.send_message(message.chat.id, "There are no active products to remove.")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+    for p in products:
+        product_id, name, desc, price, _, _, _, _ = p
+        button_text = f"❌ {name} - {format_price(price)}"
+        markup.row(types.InlineKeyboardButton(button_text, callback_data=f"remove_{product_id}"))
+    
+    markup.row(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="back_admin"))
+    bot.send_message(message.chat.id, "Select a product to remove from the shop:", reply_markup=markup)
 
 @bot.message_handler(content_types=['document'])
 def handle_file_upload(message):
@@ -214,11 +247,8 @@ def handle_file_upload(message):
             debug_print(f"Could not decode file content: {e}")
             description = "Unable to read file content."
         user_states[user_id] = {
-            'state': 'waiting_price',
-            'file_path': file_path,
-            'file_name': message.document.file_name,
-            'product_name': product_name,
-            'description': description
+            'state': 'waiting_price', 'file_path': file_path, 'file_name': message.document.file_name,
+            'product_name': product_name, 'description': description
         }
         bot.send_message(message.chat.id,
                          f"📄 File `{message.document.file_name}` uploaded.\n"
@@ -250,10 +280,8 @@ def my_purchases(message):
     cursor = conn.cursor()
     cursor.execute('''
         SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status, pu.payment_id
-        FROM purchases pu
-        JOIN products p ON pu.product_id = p.id
-        WHERE pu.user_id = ?
-        ORDER BY pu.purchase_date DESC
+        FROM purchases pu JOIN products p ON pu.product_id = p.id
+        WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC
     ''', (message.from_user.id,))
     purchases = cursor.fetchall()
     conn.close()
@@ -279,9 +307,7 @@ def my_purchases(message):
 
 @bot.message_handler(func=lambda message: message.text == 'Support')
 def support(message):
-    bot.send_message(message.chat.id,
-                     "💬 **Customer Support**\n\nFor any questions or issues, please contact the admin:\n📱 Telegram: @xenslol",
-                     parse_mode="Markdown")
+    bot.send_message(message.chat.id, "💬 **Customer Support**\n\nFor any questions or issues, please contact the admin:\n📱 Telegram: @xenslol", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == 'Back to Shop')
 def back_to_shop(message):
@@ -289,15 +315,12 @@ def back_to_shop(message):
 
 @bot.message_handler(func=lambda message: message.text == 'View Orders')
 def view_orders(message):
-    if message.from_user.id not in ADMIN_IDS:
-        return
+    if message.from_user.id not in ADMIN_IDS: return
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT pu.id, pu.username, p.name, p.description, pu.amount, pu.payment_status, pu.payment_id, pu.payment_method, pu.purchase_date
-        FROM purchases pu
-        JOIN products p ON pu.product_id = p.id
-        ORDER BY pu.purchase_date DESC
+        FROM purchases pu JOIN products p ON pu.product_id = p.id ORDER BY pu.purchase_date DESC
     ''')
     orders = cursor.fetchall()
     conn.close()
@@ -312,12 +335,9 @@ def view_orders(message):
         for order in pending_orders:
             order_id, username, product_name, description, amount, _, payment_id, method, date = order
             preview = f" ({description[:6]}...)" if description else ""
-            text += f"**Order #{order_id}**\n"
-            text += f"👤 User: @{username or 'Unknown'}\n"
-            text += f"📄 Product: {product_name}{preview}\n"
-            text += f"💰 Amount: {format_price(amount)} ({method})\n"
-            text += f"🆔 Payment ID: `{payment_id[:8]}`\n"
-            text += f"📅 {date.split('.')[0]}\n\n"
+            text += f"**Order #{order_id}**\n👤 User: @{username or 'Unknown'}\n"
+            text += f"📄 Product: {product_name}{preview}\n💰 Amount: {format_price(amount)} ({method})\n"
+            text += f"🆔 Payment ID: `{payment_id[:8]}`\n📅 {date.split('.')[0]}\n\n"
             markup.row(types.InlineKeyboardButton(f"✅ Confirm #{order_id}", callback_data=f"confirm_{payment_id}"))
         bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
     else:
@@ -326,10 +346,9 @@ def view_orders(message):
         text = "\n✅ **COMPLETED ORDERS (Last 10)**\n\n"
         total_revenue = sum(o[4] for o in completed_orders)
         for order in completed_orders[:10]:
-            order_id, username, product_name, description, amount, _, payment_id, method, date = order
+            order_id, username, product_name, description, amount, _, _, _, date = order
             preview = f" ({description[:6]}...)" if description else ""
-            text += f"**Order #{order_id}** - @{username or 'Unknown'}\n"
-            text += f"📄 {product_name}{preview} - {format_price(amount)}\n\n"
+            text += f"**Order #{order_id}** - @{username or 'Unknown'}\n📄 {product_name}{preview} - {format_price(amount)}\n\n"
         text += f"💵 **Total Revenue:** {format_price(total_revenue)}"
         bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
@@ -346,27 +365,21 @@ def handle_text_messages(message):
         try:
             price = float(text.strip())
             if price <= 0:
-                bot.send_message(message.chat.id, "Price must be a positive number. Please try again.")
+                bot.send_message(message.chat.id, "Price must be a positive number.")
                 return
         except ValueError:
-            bot.send_message(message.chat.id, "Invalid price format. Please send only a number (e.g., 10.99).")
+            bot.send_message(message.chat.id, "Invalid price format.")
             return
         product_data = user_states[user_id]
         try:
-            add_product_to_db(
-                name=product_data['product_name'], description=product_data['description'],
-                price=price, file_path=product_data['file_path'], file_name=product_data['file_name']
-            )
-            bot.send_message(message.chat.id,
-                             f"✅ **Product Added Successfully!**\n\n"
-                             f"**Name:** {product_data['product_name']}\n"
-                             f"**Price:** {format_price(price)}\n",
-                             parse_mode="Markdown")
+            add_product_to_db(name=product_data['product_name'], description=product_data['description'],
+                              price=price, file_path=product_data['file_path'], file_name=product_data['file_name'])
+            bot.send_message(message.chat.id, f"✅ **Product Added Successfully!**", parse_mode="Markdown")
             user_states.pop(user_id, None)
             admin_panel(message)
         except Exception as e:
             debug_print(f"Product creation error: {str(e)}")
-            bot.send_message(message.chat.id, "Failed to create the product. Please try again.")
+            bot.send_message(message.chat.id, "Failed to create the product.")
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
@@ -380,23 +393,13 @@ def handle_callbacks(call):
             if not product:
                 bot.edit_message_text("Product not found.", call.message.chat.id, call.message.message_id)
                 return
-            
             _, name, description, price, _, _, _, _ = product
-            
             desc_preview = ""
             if description:
-                if len(description) > 6:
-                    desc_preview = f"{description[:6]}..."
-                else:
-                    desc_preview = description
+                desc_preview = f"{description[:6]}..." if len(description) > 6 else description
             else:
                 desc_preview = "No description available."
-            
-            product_text = f"📄 **{name}**\n\n" \
-                           f"💰 **Price:** {format_price(price)}\n" \
-                           f"📝 **Description:**\n{desc_preview}\n\n" \
-                           f"Choose your payment method:"
-
+            product_text = f"📄 **{name}**\n\n💰 **Price:** {format_price(price)}\n📝 **Description:**\n{desc_preview}\n\nChoose your payment method:"
             markup = types.InlineKeyboardMarkup()
             markup.row(
                 types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"),
@@ -407,24 +410,16 @@ def handle_callbacks(call):
 
         elif call.data.startswith('buy_'):
             parts = call.data.split('_')
-            payment_method = parts[1]
-            product_id = int(parts[2])
-            
+            payment_method, product_id = parts[1], int(parts[2])
             product = get_product(product_id)
             if not product:
                 bot.answer_callback_query(call.id, "Product not found")
                 return
-            
-            # --- THIS IS THE CORRECTED LINE ---
-            payment_id, access_token, purchase_id = create_purchase(
+            payment_id, _, _ = create_purchase(
                 user_id=call.from_user.id, username=call.from_user.username,
                 product_id=product_id, payment_method=payment_method, amount=product[3]
             )
-            
-            payment_text = f"**💳 Payment Required**\n\n" \
-                           f"📄 **Product:** {product[1]}\n" \
-                           f"💰 **Amount:** {format_price(product[3])}\n\n"
-            
+            payment_text = f"**💳 Payment Required**\n\n📄 **Product:** {product[1]}\n💰 **Amount:** {format_price(product[3])}\n\n"
             if payment_method == 'cashapp':
                 payment_text += "Send payment to `$shonwithcash`\n" \
                                 f"In the 'For' / 'Note' section, you **MUST** include this ID:\n`{payment_id[:8]}`"
@@ -434,10 +429,22 @@ def handle_callbacks(call):
                                 "🔵 **Litecoin (LTC):**\n`LZXDSYuxo2XZroFMgdQPRxfi2vjV3ncq3r`\n\n" \
                                 "🟣 **Ethereum (ETH):**\n`0xf812b0466ea671B3FadC75E9624dFeFd507F22C8`\n\n" \
                                 f"After sending, an admin will confirm your payment. Your Order ID is `{payment_id[:8]}`."
-
             markup = types.InlineKeyboardMarkup()
             markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
             bot.edit_message_text(payment_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+        # --- NEW CALLBACK FOR REMOVING PRODUCTS ---
+        elif call.data.startswith('remove_'):
+            if call.from_user.id not in ADMIN_IDS:
+                bot.answer_callback_query(call.id, "Access Denied.")
+                return
+            
+            product_id = int(call.data.split('_')[1])
+            if deactivate_product_in_db(product_id):
+                bot.answer_callback_query(call.id, "Product removed successfully.")
+                bot.edit_message_text("✅ Product has been removed.", call.message.chat.id, call.message.message_id, reply_markup=None)
+            else:
+                bot.answer_callback_query(call.id, "Error: Could not remove product.")
 
         elif call.data.startswith('download_'):
             access_token = call.data.replace('download_', '')
@@ -453,6 +460,10 @@ def handle_callbacks(call):
         elif call.data == "back_products":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             browse_products(call.message)
+        
+        elif call.data == "back_admin":
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            admin_panel(call.message)
             
         bot.answer_callback_query(call.id)
     except Exception as e:
