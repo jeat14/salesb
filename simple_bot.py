@@ -44,7 +44,7 @@ def init_database():
             FOREIGN KEY (product_id) REFERENCES products (id)
         )
     ''')
-    # --- NEW USERS TABLE FOR BALANCES ---
+    # Users Table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -55,28 +55,33 @@ def init_database():
     conn.commit()
     conn.close()
 
-# --- NEW/UPDATED USER AND BALANCE FUNCTIONS ---
+# --- USER AND BALANCE FUNCTIONS (WITH CRASH FIX) ---
 
 def get_or_create_user(user_id, username=None):
-    """Retrieves a user from the DB or creates them if they don't exist."""
+    """Robustly retrieves a user or creates them if they don't exist, preventing race conditions."""
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
+
+    # Atomically create user with a default balance if they don't exist.
+    # If they already exist, this command does nothing and does not raise an error.
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 0.0)", (user_id,))
+
+    # Now that we're sure the user exists, update their username if it was provided
+    # (in case they have changed it since their last visit).
+    if username:
+        cursor.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
+
+    # Fetch the definitive user record to return it.
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
-    if user:
-        # Update username if it has changed
-        if username and user[1] != username:
-            cursor.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
-    else:
-        cursor.execute("INSERT INTO users (user_id, username, balance) VALUES (?, ?, ?)", (user_id, username, 0.0))
-        user = (user_id, username, 0.0)
+
     conn.commit()
     conn.close()
     return user
 
 def update_user_balance(user_id, amount_change):
     """Updates a user's balance by a given amount (can be negative)."""
-    get_or_create_user(user_id) # Ensure user exists
+    get_or_create_user(user_id) # Ensure user exists first
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount_change, user_id))
@@ -86,7 +91,7 @@ def update_user_balance(user_id, amount_change):
 def get_user_balance(user_id):
     """Gets a user's current balance."""
     user = get_or_create_user(user_id)
-    return user[2] # balance is the 3rd column
+    return user[2] if user else 0.0
 
 # (Other database functions remain the same)
 def add_product_to_db(name, description, price, file_path, file_name):
@@ -186,13 +191,11 @@ def send_welcome(message):
             return
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('Browse Products', 'My Purchases')
-    # --- ADDED 'My Balance' BUTTON ---
     markup.row('My Balance', 'Support')
     if message.from_user.id in ADMIN_IDS:
         markup.row('Admin Panel')
     bot.reply_to(message, f"Welcome to Retrinity cc shop, {message.from_user.first_name}!", reply_markup=markup)
 
-# --- NEW '/addfunds' COMMAND HANDLER ---
 @bot.message_handler(commands=['addfunds'])
 def add_funds_command(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -214,21 +217,17 @@ def add_funds_command(message):
     update_user_balance(target_user_id, amount)
     new_balance = get_user_balance(target_user_id)
     
-    # Notify admin and user
     bot.reply_to(message, f"✅ Successfully added {format_price(amount)} to user {target_user_id}.\nNew Balance: {format_price(new_balance)}")
     try:
         bot.send_message(target_user_id, f"An admin has added {format_price(amount)} to your balance.\nYour new balance is: {format_price(new_balance)}")
     except Exception as e:
         debug_print(f"Could not notify user {target_user_id} about added funds: {e}")
 
-# --- NEW 'My Balance' HANDLER ---
 @bot.message_handler(func=lambda message: message.text == 'My Balance')
 def show_balance_handler(message):
     balance = get_user_balance(message.from_user.id)
     bot.send_message(message.chat.id, f"💰 Your current balance is: {format_price(balance)}")
 
-# (Other handlers like admin_panel, add_product, etc. remain here)
-# ...
 @bot.message_handler(func=lambda message: message.text == 'Admin Panel')
 def admin_panel(message):
     if message.from_user.id not in ADMIN_IDS:
@@ -303,10 +302,111 @@ def browse_products(message):
         button_text = f"{name}{preview} - {format_price(price)}"
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
     bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
-# (My Purchases, Support, Back to shop, View Orders... all the same)
-#...
 
-# --- CALLBACK QUERY HANDLER (HEAVILY UPDATED) ---
+@bot.message_handler(func=lambda message: message.text == 'My Purchases')
+def my_purchases(message):
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status, pu.payment_id
+        FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC
+    ''', (message.from_user.id,))
+    purchases = cursor.fetchall()
+    conn.close()
+    if not purchases:
+        bot.send_message(message.chat.id, "You have not made any purchases yet.")
+        return
+    text = "📋 **Your Purchase History**\n\n"
+    markup = types.InlineKeyboardMarkup()
+    status_emoji = {'pending': '⏳', 'completed': '✅'}
+    for purchase in purchases:
+        name, description, amount, date, token, payment_status, payment_id = purchase
+        preview = f" ({description[:6]}...)" if description else ""
+        text += f"📄 {name}{preview}\n"
+        text += f"💰 {format_price(amount)}\n"
+        text += f"💳 Status: {status_emoji.get(payment_status, '❓')} {payment_status.title()}\n"
+        text += f"📅 {date.split('.')[0]}\n"
+        if payment_status == 'completed':
+            markup.row(types.InlineKeyboardButton(f"📥 Download {name[:20]}", callback_data=f"download_{token}"))
+            text += "✅ Ready for download\n\n"
+        else:
+            text += f"⏳ Awaiting payment confirmation.\nOrder ID: `{payment_id[:8]}`\n\n"
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == 'Support')
+def support(message):
+    bot.send_message(message.chat.id, "💬 **Customer Support**\n\nFor any questions or issues, please contact the admin:\n📱 Telegram: @xenslol", parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == 'Back to Shop')
+def back_to_shop(message):
+    send_welcome(message)
+
+@bot.message_handler(func=lambda message: message.text == 'View Orders')
+def view_orders(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT pu.id, pu.username, p.name, p.description, pu.amount, pu.payment_status, pu.payment_id, pu.payment_method, pu.purchase_date FROM purchases pu JOIN products p ON pu.product_id = p.id ORDER BY pu.purchase_date DESC")
+    orders = cursor.fetchall()
+    conn.close()
+    if not orders:
+        bot.send_message(message.chat.id, "No orders found.")
+        return
+    pending_orders = [o for o in orders if o[5] == 'pending']
+    completed_orders = [o for o in orders if o[5] == 'completed']
+    if pending_orders:
+        text = "⏳ **PENDING PAYMENTS**\n\n"
+        markup = types.InlineKeyboardMarkup()
+        for order in pending_orders:
+            order_id, username, product_name, description, amount, _, payment_id, method, date = order
+            preview = f" ({description[:6]}...)" if description else ""
+            text += f"**Order #{order_id}**\n👤 User: @{username or 'Unknown'}\n"
+            text += f"📄 Product: {product_name}{preview}\n💰 Amount: {format_price(amount)} ({method})\n"
+            text += f"🆔 Payment ID: `{payment_id[:8]}`\n📅 {date.split('.')[0]}\n\n"
+            markup.row(types.InlineKeyboardButton(f"✅ Confirm #{order_id}", callback_data=f"confirm_{payment_id}"))
+        bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        bot.send_message(message.chat.id, "No pending orders found.")
+    if completed_orders:
+        text = "\n✅ **COMPLETED ORDERS (Last 10)**\n\n"
+        total_revenue = sum(o[4] for o in completed_orders)
+        for order in completed_orders[:10]:
+            order_id, username, product_name, description, amount, _, _, _, date = order
+            preview = f" ({description[:6]}...)" if description else ""
+            text += f"**Order #{order_id}** - @{username or 'Unknown'}\n📄 {product_name}{preview} - {format_price(amount)}\n\n"
+        text += f"💵 **Total Revenue:** {format_price(total_revenue)}"
+        bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda message: message.text == '🧪 Test Mode')
+def test_mode(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    bot.send_message(message.chat.id, "Entering test mode...")
+
+@bot.message_handler(func=lambda message: True)
+def handle_text_messages(message):
+    user_id = message.from_user.id
+    text = message.text
+    if isinstance(user_states.get(user_id), dict) and user_states[user_id].get('state') == 'waiting_price':
+        try:
+            price = float(text.strip())
+            if price <= 0:
+                bot.send_message(message.chat.id, "Price must be a positive number.")
+                return
+        except ValueError:
+            bot.send_message(message.chat.id, "Invalid price format.")
+            return
+        product_data = user_states[user_id]
+        try:
+            add_product_to_db(name=product_data['product_name'], description=product_data['description'], price=price, file_path=product_data['file_path'], file_name=product_data['file_name'])
+            bot.send_message(message.chat.id, f"✅ **Product Added Successfully!**", parse_mode="Markdown")
+            user_states.pop(user_id, None)
+            admin_panel(message)
+        except Exception as e:
+            debug_print(f"Product creation error: {str(e)}")
+            bot.send_message(message.chat.id, "Failed to create the product.")
+    else:
+        bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     debug_print(f"Callback received: {call.data}")
@@ -314,7 +414,6 @@ def handle_callbacks(call):
     username = call.from_user.username
     
     try:
-        # --- Product Detail View ---
         if call.data.startswith('product_'):
             product_id = int(call.data.split('_')[1])
             product = get_product(product_id)
@@ -323,78 +422,55 @@ def handle_callbacks(call):
                 return
             
             _, name, description, price, _, _, _, _ = product
-            
             desc_preview = f"{description[:6]}..." if description and len(description) > 6 else (description or "No description.")
-            
             product_text = f"📄 **{name}**\n\n💰 **Price:** {format_price(price)}\n📝 **Description:**\n{desc_preview}\n\nChoose your payment method:"
-
             markup = types.InlineKeyboardMarkup()
-            markup.row(
-                types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"),
-                types.InlineKeyboardButton("₿ Crypto", callback_data=f"buy_crypto_{product_id}")
-            )
+            markup.row(types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"), types.InlineKeyboardButton("₿ Crypto", callback_data=f"buy_crypto_{product_id}"))
             markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
             bot.edit_message_text(product_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-        # --- Initial Buy Action (checks balance) ---
         elif call.data.startswith('buy_'):
             parts = call.data.split('_')
             payment_method, product_id = parts[1], int(parts[2])
-            
             product = get_product(product_id)
             if not product:
                 bot.answer_callback_query(call.id, "Product not found")
                 return
-            
             price = product[3]
             balance = get_user_balance(user_id)
-
             if balance >= price:
-                # User has enough balance, give them the choice
                 markup = types.InlineKeyboardMarkup()
                 markup.row(types.InlineKeyboardButton(f"Pay with Balance ({format_price(balance)})", callback_data=f"pay_balance_{product_id}"))
                 markup.row(types.InlineKeyboardButton("Pay with CashApp/Crypto instead", callback_data=f"pay_external_{payment_method}_{product_id}"))
                 markup.row(types.InlineKeyboardButton("Cancel", callback_data="back_products"))
                 bot.edit_message_text(f"You have enough funds to buy this item.\n\nHow would you like to pay?", call.message.chat.id, call.message.message_id, reply_markup=markup)
             else:
-                # Not enough balance, proceed to external payment directly
                 show_external_payment_info(call, payment_method, product_id)
 
-        # --- Pay with Balance Action ---
         elif call.data.startswith('pay_balance_'):
             product_id = int(call.data.split('_')[1])
             product = get_product(product_id)
             if not product:
                 bot.answer_callback_query(call.id, "Product not found.")
                 return
-            
             price = product[3]
             balance = get_user_balance(user_id)
-
             if balance >= price:
-                # Deduct from balance
                 update_user_balance(user_id, -price)
                 new_balance = get_user_balance(user_id)
-                
-                # Create and confirm purchase instantly
                 payment_id, access_token, _ = create_purchase(user_id, username, product_id, 'balance', price)
                 confirm_payment(payment_id)
-                
                 success_text = f"✅ Purchase Successful!\n\nYour new balance is {format_price(new_balance)}.\n\nHere is your download:"
                 bot.edit_message_text(success_text, call.message.chat.id, call.message.message_id, reply_markup=None)
-                
-                # Send the file
                 handle_download_callback(call, access_token)
             else:
                 bot.edit_message_text("Your balance is no longer sufficient for this purchase.", call.message.chat.id, call.message.message_id, reply_markup=None)
 
-        # --- Pay with External Methods Action ---
         elif call.data.startswith('pay_external_'):
             parts = call.data.split('_')
             payment_method, product_id = parts[2], int(parts[3])
             show_external_payment_info(call, payment_method, product_id)
 
-        # (Other callbacks like remove, download, confirm, back...)
         elif call.data.startswith('remove_'):
             if user_id not in ADMIN_IDS: return
             product_id = int(call.data.split('_')[1])
@@ -422,18 +498,14 @@ def handle_callbacks(call):
         debug_print(f"Callback error: {str(e)}")
         bot.answer_callback_query(call.id, "An error occurred.")
 
-# --- New function to avoid repeating code ---
 def show_external_payment_info(call, payment_method, product_id):
     """Generates and sends the message for CashApp/Crypto payments."""
     product = get_product(product_id)
     if not product:
         bot.answer_callback_query(call.id, "Product not found")
         return
-    
     payment_id, _, _ = create_purchase(call.from_user.id, call.from_user.username, product_id, payment_method, product[3])
-    
     payment_text = f"**💳 Payment Required**\n\n📄 **Product:** {product[1]}\n💰 **Amount:** {format_price(product[3])}\n\n"
-    
     if payment_method == 'cashapp':
         payment_text += "Send payment to `$shonwithcash`\nIn the 'Note' section, you **MUST** include this ID:\n`{payment_id[:8]}`"
     else: # crypto
@@ -442,13 +514,36 @@ def show_external_payment_info(call, payment_method, product_id):
                         "🔵 **Litecoin (LTC):**\n`LZXDSYuxo2XZroFMgdQPRxfi2vjV3ncq3r`\n\n" \
                         "🟣 **Ethereum (ETH):**\n`0xf812b0466ea671B3FadC75E9624dFeFd507F22C8`\n\n" \
                         f"After sending, an admin will confirm your payment. Your Order ID is `{payment_id[:8]}`."
-
     markup = types.InlineKeyboardMarkup()
     markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
     bot.edit_message_text(payment_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-# (The rest of the functions like handle_download_callback, etc., remain here)
-#...
+def handle_download_callback(call, access_token):
+    file_info = get_file_by_token(access_token)
+    if not file_info:
+        bot.send_message(call.message.chat.id, "File not found or your payment is not yet confirmed.")
+        return
+    file_path, file_name = file_info
+    try:
+        with open(file_path, 'rb') as f:
+            bot.send_document(call.message.chat.id, f, caption=f"Thank you for your purchase!\n\n📁 {file_name}")
+    except Exception as e:
+        debug_print(f"Download error: {str(e)}")
+        bot.send_message(call.message.chat.id, "Failed to send the file. Please contact support.")
+
+def handle_download(message, access_token):
+    file_info = get_file_by_token(access_token)
+    if not file_info:
+        bot.send_message(message.chat.id, "File not found or your payment is not yet confirmed.")
+        return
+    file_path, file_name = file_info
+    try:
+        with open(file_path, 'rb') as f:
+            bot.send_document(message.chat.id, f, caption=f"Thank you for your purchase!\n\n📁 {file_name}")
+    except Exception as e:
+        debug_print(f"Download error: {str(e)}")
+        bot.send_message(message.chat.id, "Failed to send the file. Please contact support.")
+
 if __name__ == "__main__":
     init_database()
     debug_print("Bot starting up with Funds & Balance system...")
