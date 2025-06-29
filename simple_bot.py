@@ -150,13 +150,10 @@ def save_file(file_content, original_filename):
     file_ext = os.path.splitext(original_filename)[1].lower()
     if file_ext != '.txt':
         return None, "Only .txt files are allowed for this simplified upload."
-
     secure_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(UPLOAD_FOLDER, secure_filename)
-
     with open(file_path, 'wb') as f:
         f.write(file_content)
-
     return file_path, None
 
 # --- BOT MESSAGE HANDLERS ---
@@ -169,7 +166,6 @@ def send_welcome(message):
         if token.startswith('download_'):
             handle_download(message, token.replace('download_', ''))
             return
-
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('Browse Products', 'My Purchases')
     markup.row('Support')
@@ -247,13 +243,10 @@ def browse_products(message):
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
     bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
 
-# --- 'MY PURCHASES' HANDLER (UPDATED) ---
 @bot.message_handler(func=lambda message: message.text == 'My Purchases')
 def my_purchases(message):
-    """Shows the user their purchase history with a description preview."""
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
-    # Fetch the product description along with other details
     cursor.execute('''
         SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status, pu.payment_id
         FROM purchases pu
@@ -263,32 +256,24 @@ def my_purchases(message):
     ''', (message.from_user.id,))
     purchases = cursor.fetchall()
     conn.close()
-
     if not purchases:
         bot.send_message(message.chat.id, "You have not made any purchases yet.")
         return
-
     text = "📋 **Your Purchase History**\n\n"
     markup = types.InlineKeyboardMarkup()
     status_emoji = {'pending': '⏳', 'completed': '✅'}
-
     for purchase in purchases:
         name, description, amount, date, token, payment_status, payment_id = purchase
-        
-        # Create the 6-digit preview
         preview = f" ({description[:6]}...)" if description else ""
-        
         text += f"📄 {name}{preview}\n"
         text += f"💰 {format_price(amount)}\n"
         text += f"💳 Status: {status_emoji.get(payment_status, '❓')} {payment_status.title()}\n"
-        text += f"📅 {date.split('.')[0]}\n" # Clean up date format
-
+        text += f"📅 {date.split('.')[0]}\n"
         if payment_status == 'completed':
             markup.row(types.InlineKeyboardButton(f"📥 Download {name[:20]}", callback_data=f"download_{token}"))
             text += "✅ Ready for download\n\n"
         else:
             text += f"⏳ Awaiting payment confirmation.\nOrder ID: `{payment_id[:8]}`\n\n"
-
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == 'Support')
@@ -301,16 +286,12 @@ def support(message):
 def back_to_shop(message):
     send_welcome(message)
 
-# --- 'VIEW ORDERS' HANDLER (UPDATED) ---
 @bot.message_handler(func=lambda message: message.text == 'View Orders')
 def view_orders(message):
-    """Allows admins to view all orders with a description preview."""
     if message.from_user.id not in ADMIN_IDS:
         return
-
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
-    # Fetch product description along with other details
     cursor.execute('''
         SELECT pu.id, pu.username, p.name, p.description, pu.amount, pu.payment_status, pu.payment_id, pu.payment_method, pu.purchase_date
         FROM purchases pu
@@ -319,24 +300,17 @@ def view_orders(message):
     ''')
     orders = cursor.fetchall()
     conn.close()
-
     if not orders:
         bot.send_message(message.chat.id, "No orders found.")
         return
-
     pending_orders = [o for o in orders if o[5] == 'pending']
     completed_orders = [o for o in orders if o[5] == 'completed']
-    
-    # Display Pending Orders
     if pending_orders:
         text = "⏳ **PENDING PAYMENTS**\n\n"
         markup = types.InlineKeyboardMarkup()
         for order in pending_orders:
             order_id, username, product_name, description, amount, _, payment_id, method, date = order
-            
-            # Create the 6-digit preview
             preview = f" ({description[:6]}...)" if description else ""
-
             text += f"**Order #{order_id}**\n"
             text += f"👤 User: @{username or 'Unknown'}\n"
             text += f"📄 Product: {product_name}{preview}\n"
@@ -347,16 +321,12 @@ def view_orders(message):
         bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
     else:
         bot.send_message(message.chat.id, "No pending orders found.")
-
-    # Display Completed Orders
     if completed_orders:
         text = "\n✅ **COMPLETED ORDERS (Last 10)**\n\n"
         total_revenue = sum(o[4] for o in completed_orders)
         for order in completed_orders[:10]:
             order_id, username, product_name, description, amount, _, payment_id, method, date = order
-            
             preview = f" ({description[:6]}...)" if description else ""
-
             text += f"**Order #{order_id}** - @{username or 'Unknown'}\n"
             text += f"📄 {product_name}{preview} - {format_price(amount)}\n\n"
         text += f"💵 **Total Revenue:** {format_price(total_revenue)}"
@@ -365,7 +335,6 @@ def view_orders(message):
 @bot.message_handler(func=lambda message: message.text == '🧪 Test Mode')
 def test_mode(message):
     if message.from_user.id not in ADMIN_IDS: return
-    # (Your existing 'Test Mode' logic can be placed here)
     bot.send_message(message.chat.id, "Entering test mode...")
 
 @bot.message_handler(func=lambda message: True)
@@ -400,6 +369,7 @@ def handle_text_messages(message):
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
+# --- CALLBACK QUERY HANDLER (UPDATED) ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     debug_print(f"Callback received: {call.data}")
@@ -410,11 +380,18 @@ def handle_callbacks(call):
             if not product:
                 bot.edit_message_text("Product not found.", call.message.chat.id, call.message.message_id)
                 return
+            
             _, name, description, price, _, _, _, _ = product
+            
+            # --- THIS IS THE CORRECTED PART ---
+            # Create a 6-digit preview for the description text
+            desc_preview = f"{description[:6]}..." if description and len(description) > 6 else (description or "No description.")
+
             product_text = f"📄 **{name}**\n\n" \
                            f"💰 **Price:** {format_price(price)}\n" \
-                           f"📝 **Description:**\n{description or 'No description available.'}\n\n" \
+                           f"📝 **Description:**\n{desc_preview}\n\n" \
                            f"Choose your payment method:"
+
             markup = types.InlineKeyboardMarkup()
             markup.row(
                 types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"),
@@ -422,19 +399,22 @@ def handle_callbacks(call):
             )
             markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
             bot.edit_message_text(product_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
         elif call.data.startswith('download_'):
             access_token = call.data.replace('download_', '')
             handle_download_callback(call, access_token)
+
         elif call.data.startswith('confirm_'):
              if call.from_user.id not in ADMIN_IDS:
                 bot.answer_callback_query(call.id, "Access Denied.")
                 return
              payment_id = call.data.replace('confirm_', '')
-             # (Your confirmation logic here)
              bot.answer_callback_query(call.id, "Order confirmed!")
+
         elif call.data == "back_products":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             browse_products(call.message)
+            
         bot.answer_callback_query(call.id)
     except Exception as e:
         debug_print(f"Callback error: {str(e)}")
