@@ -7,11 +7,11 @@ from datetime import datetime
 
 # --- CONFIGURATION ---
 # Replace with your real bot token
-TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
+TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
 # Add the Telegram User IDs of all admins
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
-    7864373277, # @xenslol  ID
+    # 789012345, # Example: Add another admin ID here
 ]
 
 # --- INITIALIZATION ---
@@ -160,18 +160,22 @@ def save_file(file_content, original_filename):
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    """Handles the /start command with the updated welcome message."""
     debug_print(f"Start command from user {message.from_user.id}")
     if len(message.text.split()) > 1:
         token = message.text.split()[1]
         if token.startswith('download_'):
             handle_download(message, token.replace('download_', ''))
             return
+
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('Browse Products', 'My Purchases')
     markup.row('Support')
     if message.from_user.id in ADMIN_IDS:
         markup.row('Admin Panel')
-    bot.reply_to(message, f"Welcome to the Shop, {message.from_user.first_name}!", reply_markup=markup)
+    
+    # --- THIS LINE HAS BEEN CHANGED ---
+    bot.reply_to(message, f"Welcome to Retrinity cc shop, {message.from_user.first_name}!", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == 'Admin Panel')
 def admin_panel(message):
@@ -369,7 +373,6 @@ def handle_text_messages(message):
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
-# --- CALLBACK QUERY HANDLER (WITH BUY LOGIC RESTORED) ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     debug_print(f"Callback received: {call.data}")
@@ -405,7 +408,6 @@ def handle_callbacks(call):
             markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
             bot.edit_message_text(product_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
-        # --- THIS BLOCK WAS MISSING AND HAS BEEN RESTORED ---
         elif call.data.startswith('buy_'):
             parts = call.data.split('_')
             payment_method = parts[1]
@@ -417,7 +419,7 @@ def handle_callbacks(call):
                 return
             
             payment_id, access_token, purchase_id = create_purchase(
-                user_id=call.from_user.id, username=call.from_user.username,
+                user_id=call.from__user.id, username=call.from_user.username,
                 product_id=product_id, payment_method=payment_method, amount=product[3]
             )
             
