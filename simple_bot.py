@@ -11,7 +11,7 @@ TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
 # Add the Telegram User IDs of all admins
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
-    # 789012345, # Example: Add another admin ID here
+    7864373277, # @xenslol  ID
 ]
 
 # --- INITIALIZATION ---
