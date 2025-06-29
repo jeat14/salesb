@@ -6,9 +6,10 @@ import uuid
 from datetime import datetime
 
 # --- CONFIGURATION ---
-TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
+TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
+    7864373277     @xenslol
 ]
 
 # --- INITIALIZATION ---
