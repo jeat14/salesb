@@ -369,7 +369,7 @@ def handle_text_messages(message):
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
-# --- CALLBACK QUERY HANDLER (UPDATED WITH THE FIX) ---
+# --- CALLBACK QUERY HANDLER (WITH BUY LOGIC RESTORED) ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     debug_print(f"Callback received: {call.data}")
@@ -383,7 +383,6 @@ def handle_callbacks(call):
             
             _, name, description, price, _, _, _, _ = product
             
-            # --- THIS IS THE NEW, CLEARER FIX ---
             desc_preview = ""
             if description:
                 if len(description) > 6:
@@ -393,8 +392,6 @@ def handle_callbacks(call):
             else:
                 desc_preview = "No description available."
             
-            debug_print(f"Generated description preview: '{desc_preview}'")
-
             product_text = f"📄 **{name}**\n\n" \
                            f"💰 **Price:** {format_price(price)}\n" \
                            f"📝 **Description:**\n{desc_preview}\n\n" \
@@ -407,6 +404,40 @@ def handle_callbacks(call):
             )
             markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
             bot.edit_message_text(product_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+        # --- THIS BLOCK WAS MISSING AND HAS BEEN RESTORED ---
+        elif call.data.startswith('buy_'):
+            parts = call.data.split('_')
+            payment_method = parts[1]
+            product_id = int(parts[2])
+            
+            product = get_product(product_id)
+            if not product:
+                bot.answer_callback_query(call.id, "Product not found")
+                return
+            
+            payment_id, access_token, purchase_id = create_purchase(
+                user_id=call.from_user.id, username=call.from_user.username,
+                product_id=product_id, payment_method=payment_method, amount=product[3]
+            )
+            
+            payment_text = f"**💳 Payment Required**\n\n" \
+                           f"📄 **Product:** {product[1]}\n" \
+                           f"💰 **Amount:** {format_price(product[3])}\n\n"
+            
+            if payment_method == 'cashapp':
+                payment_text += "Send payment to `$shonwithcash`\n" \
+                                f"In the 'For' / 'Note' section, you **MUST** include this ID:\n`{payment_id[:8]}`"
+            else: # crypto
+                payment_text += "**Send the exact amount to one of the addresses below.**\n\n" \
+                                "🟡 **Bitcoin (BTC):**\n`bc1q9nc2clammklw8jtvmzfqxg4e9exlcc7ww7e64e`\n\n" \
+                                "🔵 **Litecoin (LTC):**\n`LZXDSYuxo2XZroFMgdQPRxfi2vjV3ncq3r`\n\n" \
+                                "🟣 **Ethereum (ETH):**\n`0xf812b0466ea671B3FadC75E9624dFeFd507F22C8`\n\n" \
+                                f"After sending, an admin will confirm your payment. Your Order ID is `{payment_id[:8]}`."
+
+            markup = types.InlineKeyboardMarkup()
+            markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
+            bot.edit_message_text(payment_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
         elif call.data.startswith('download_'):
             access_token = call.data.replace('download_', '')
