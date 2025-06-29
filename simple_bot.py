@@ -369,7 +369,7 @@ def handle_text_messages(message):
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
-# --- CALLBACK QUERY HANDLER (UPDATED) ---
+# --- CALLBACK QUERY HANDLER (UPDATED WITH THE FIX) ---
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     debug_print(f"Callback received: {call.data}")
@@ -383,9 +383,17 @@ def handle_callbacks(call):
             
             _, name, description, price, _, _, _, _ = product
             
-            # --- THIS IS THE CORRECTED PART ---
-            # Create a 6-digit preview for the description text
-            desc_preview = f"{description[:6]}..." if description and len(description) > 6 else (description or "No description.")
+            # --- THIS IS THE NEW, CLEARER FIX ---
+            desc_preview = ""
+            if description:
+                if len(description) > 6:
+                    desc_preview = f"{description[:6]}..."
+                else:
+                    desc_preview = description
+            else:
+                desc_preview = "No description available."
+            
+            debug_print(f"Generated description preview: '{desc_preview}'")
 
             product_text = f"📄 **{name}**\n\n" \
                            f"💰 **Price:** {format_price(price)}\n" \
