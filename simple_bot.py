@@ -11,7 +11,7 @@ TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
 # Add the Telegram User IDs of all admins
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
-    # 789012345, # Example: Add another admin ID here
+    7864373277, # @xenslol
 ]
 
 # --- INITIALIZATION ---
@@ -160,21 +160,18 @@ def save_file(file_content, original_filename):
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Handles the /start command with the updated welcome message."""
+    """Handles the /start command."""
     debug_print(f"Start command from user {message.from_user.id}")
     if len(message.text.split()) > 1:
         token = message.text.split()[1]
         if token.startswith('download_'):
             handle_download(message, token.replace('download_', ''))
             return
-
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('Browse Products', 'My Purchases')
     markup.row('Support')
     if message.from_user.id in ADMIN_IDS:
         markup.row('Admin Panel')
-    
-    # --- THIS LINE HAS BEEN CHANGED ---
     bot.reply_to(message, f"Welcome to Retrinity cc shop, {message.from_user.first_name}!", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == 'Admin Panel')
@@ -418,8 +415,9 @@ def handle_callbacks(call):
                 bot.answer_callback_query(call.id, "Product not found")
                 return
             
+            # --- THIS IS THE CORRECTED LINE ---
             payment_id, access_token, purchase_id = create_purchase(
-                user_id=call.from__user.id, username=call.from_user.username,
+                user_id=call.from_user.id, username=call.from_user.username,
                 product_id=product_id, payment_method=payment_method, amount=product[3]
             )
             
