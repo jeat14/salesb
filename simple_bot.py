@@ -6,8 +6,7 @@ import uuid
 from datetime import datetime
 
 # --- CONFIGURATION ---
-TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
-# --- THIS IS THE CORRECTED ADMIN LIST ---
+TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
     7864373277,  # @xenslol's ID
@@ -66,6 +65,16 @@ def get_or_create_user(user_id, username=None):
     conn.commit()
     conn.close()
     return user
+
+def get_user_by_username(username):
+    """Finds a user's ID by their username from the local database."""
+    clean_username = username.lstrip('@')
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE username = ?", (clean_username,))
+    user = cursor.fetchone()
+    conn.close()
+    return user[0] if user else None
 
 def update_user_balance(user_id, amount_change):
     get_or_create_user(user_id)
@@ -133,6 +142,15 @@ def confirm_payment(payment_id):
     conn.close()
     return rows > 0
 
+def get_purchase_by_payment_id(payment_id):
+    """Gets purchase details, including the product_id."""
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT pu.id, pu.user_id, pu.product_id, pu.payment_status, pu.access_token, p.name FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.payment_id = ?", (payment_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res
+
 def get_file_by_token(access_token):
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
@@ -178,17 +196,28 @@ def add_funds_command(message):
         return
     parts = message.text.split()
     if len(parts) != 3:
-        bot.reply_to(message, "Usage: /addfunds <user_id> <amount>")
+        bot.reply_to(message, "Usage:\n/addfunds <@username_or_id> <amount>")
+        return
+    target_identifier = parts[1]
+    target_user_id = None
+    if target_identifier.startswith('@'):
+        target_user_id = get_user_by_username(target_identifier)
+        if not target_user_id:
+            bot.reply_to(message, f"User {target_identifier} not found. They must have started the bot at least once.")
+            return
+    elif target_identifier.isdigit():
+        target_user_id = int(target_identifier)
+    else:
+        bot.reply_to(message, "Invalid user identifier. Please use a User ID or an @username.")
         return
     try:
-        target_user_id = int(parts[1])
         amount = float(parts[2])
     except ValueError:
-        bot.reply_to(message, "Invalid User ID or Amount. Please use numbers.")
+        bot.reply_to(message, "Invalid Amount. Please use a number.")
         return
     update_user_balance(target_user_id, amount)
     new_balance = get_user_balance(target_user_id)
-    bot.reply_to(message, f"✅ Successfully added {format_price(amount)} to user {target_user_id}.\nNew Balance: {format_price(new_balance)}")
+    bot.reply_to(message, f"✅ Successfully added {format_price(amount)} to user {target_identifier}.\nTheir new balance is: {format_price(new_balance)}")
     try:
         bot.send_message(target_user_id, f"An admin has added {format_price(amount)} to your balance.\nYour new balance is: {format_price(new_balance)}")
     except Exception as e:
@@ -249,7 +278,7 @@ def handle_file_upload(message):
         product_name = os.path.splitext(message.document.file_name)[0]
         try:
             description = file_content.decode('utf-8')
-        except Exception as e:
+        except:
             description = "Unable to read file content."
         user_states[user_id] = {'state': 'waiting_price', 'file_path': file_path, 'file_name': message.document.file_name, 'product_name': product_name, 'description': description}
         bot.send_message(message.chat.id, f"📄 File `{message.document.file_name}` uploaded.\n**Now, please enter the price for this item.**", parse_mode="Markdown")
@@ -276,7 +305,7 @@ def browse_products(message):
 def my_purchases(message):
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status, pu.payment_id FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
+    cursor.execute("SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
     purchases = cursor.fetchall()
     conn.close()
     if not purchases:
@@ -286,7 +315,7 @@ def my_purchases(message):
     markup = types.InlineKeyboardMarkup()
     status_emoji = {'pending': '⏳', 'completed': '✅'}
     for purchase in purchases:
-        name, description, amount, date, token, payment_status, payment_id = purchase
+        name, description, amount, date, token, payment_status = purchase
         preview = f" ({description[:6]}...)" if description else ""
         text += f"📄 {name}{preview}\n"
         text += f"💰 {format_price(amount)}\n"
@@ -296,7 +325,7 @@ def my_purchases(message):
             markup.row(types.InlineKeyboardButton(f"📥 Download {name[:20]}", callback_data=f"download_{token}"))
             text += "✅ Ready for download\n\n"
         else:
-            text += f"⏳ Awaiting payment confirmation.\nOrder ID: `{payment_id[:8]}`\n\n"
+            text += f"⏳ Awaiting payment confirmation.\n\n"
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == 'Support')
@@ -378,14 +407,12 @@ def handle_callbacks(call):
     debug_print(f"Callback received: {call.data}")
     user_id = call.from_user.id
     username = call.from_user.username
-    
     try:
         if call.data.startswith('product_'):
             product_id = int(call.data.split('_')[1])
             product = get_product(product_id)
             if not product:
-                bot.edit_message_text("Product not found.", call.message.chat.id, call.message.message_id)
-                return
+                bot.edit_message_text("Product not found.", call.message.chat.id, call.message.message_id); return
             _, name, description, price, _, _, _, _ = product
             desc_preview = f"{description[:6]}..." if description and len(description) > 6 else (description or "No description.")
             product_text = f"📄 **{name}**\n\n💰 **Price:** {format_price(price)}\n📝 **Description:**\n{desc_preview}\n\nChoose your payment method:"
@@ -399,8 +426,7 @@ def handle_callbacks(call):
             payment_method, product_id = parts[1], int(parts[2])
             product = get_product(product_id)
             if not product:
-                bot.answer_callback_query(call.id, "Product not found")
-                return
+                bot.answer_callback_query(call.id, "Product not found"); return
             price = product[3]
             balance = get_user_balance(user_id)
             if balance >= price:
@@ -416,8 +442,7 @@ def handle_callbacks(call):
             product_id = int(call.data.split('_')[2])
             product = get_product(product_id)
             if not product:
-                bot.answer_callback_query(call.id, "Product not found.")
-                return
+                bot.answer_callback_query(call.id, "Product not found."); return
             price = product[3]
             balance = get_user_balance(user_id)
             if balance >= price:
@@ -425,6 +450,7 @@ def handle_callbacks(call):
                 new_balance = get_user_balance(user_id)
                 payment_id, access_token, _ = create_purchase(user_id, username, product_id, 'balance', price)
                 confirm_payment(payment_id)
+                deactivate_product_in_db(product_id) # Deactivate product after sale
                 success_text = f"✅ Purchase Successful!\n\nYour new balance is {format_price(new_balance)}.\n\nHere is your download:"
                 bot.edit_message_text(success_text, call.message.chat.id, call.message.message_id, reply_markup=None)
                 handle_download_callback(call, access_token)
@@ -444,13 +470,34 @@ def handle_callbacks(call):
                 bot.edit_message_text("✅ Product has been removed.", call.message.chat.id, call.message.message_id, reply_markup=None)
             else:
                 bot.answer_callback_query(call.id, "Error: Could not remove product.")
+        
+        elif call.data.startswith('confirm_'):
+            if user_id not in ADMIN_IDS: return
+            payment_id = call.data.replace('confirm_', '')
+            purchase = get_purchase_by_payment_id(payment_id)
+            if not purchase:
+                bot.answer_callback_query(call.id, "Purchase not found.")
+                return
+            
+            _, customer_user_id, product_id_to_deactivate, _, access_token, product_name = purchase
+
+            if confirm_payment(payment_id):
+                deactivate_product_in_db(product_id_to_deactivate) # Deactivate product after sale
+                bot.answer_callback_query(call.id, "✅ Payment confirmed and product removed from shop!")
+                bot.edit_message_text(f"✅ Payment confirmed for order of '{product_name}'.", call.message.chat.id, call.message.message_id, reply_markup=None)
+                try:
+                    markup = types.InlineKeyboardMarkup()
+                    markup.row(types.InlineKeyboardButton("📥 Download Now", callback_data=f"download_{access_token}"))
+                    bot.send_message(customer_user_id, f"🎉 Your payment for **{product_name}** has been confirmed!\n\nYou can now download your file.", reply_markup=markup, parse_mode="Markdown")
+                except Exception as e:
+                    debug_print(f"Failed to notify customer {customer_user_id}: {e}")
+            else:
+                 bot.answer_callback_query(call.id, "❌ Failed to confirm payment.")
+
         elif call.data.startswith('download_'):
             access_token = call.data.replace('download_', '')
             handle_download_callback(call, access_token)
-        elif call.data.startswith('confirm_'):
-             if user_id not in ADMIN_IDS: return
-             payment_id = call.data.replace('confirm_', '')
-             bot.answer_callback_query(call.id, "Order confirmed!")
+            
         elif call.data == "back_products":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             browse_products(call.message)
@@ -466,12 +513,11 @@ def handle_callbacks(call):
 def show_external_payment_info(call, payment_method, product_id):
     product = get_product(product_id)
     if not product:
-        bot.answer_callback_query(call.id, "Product not found")
-        return
+        bot.answer_callback_query(call.id, "Product not found"); return
     payment_id, _, _ = create_purchase(call.from_user.id, call.from_user.username, product_id, payment_method, product[3])
     payment_text = f"**💳 Payment Required**\n\n📄 **Product:** {product[1]}\n💰 **Amount:** {format_price(product[3])}\n\n"
     if payment_method == 'cashapp':
-        payment_text += "Send payment to `$shonwithcash`\nIn the 'Note' section, you **MUST** include this ID:\n`{payment_id[:8]}`"
+        payment_text += f"Send payment to `$shonwithcash`\nIn the 'For' / 'Note' section, you **MUST** include this ID:\n`{payment_id[:8]}`"
     else: # crypto
         payment_text += "**Send the exact amount to one of the addresses below.**\n\n" \
                         "🟡 **Bitcoin (BTC):**\n`bc1q9nc2clammklw8jtvmzfqxg4e9exlcc7ww7e64e`\n\n" \
@@ -485,8 +531,7 @@ def show_external_payment_info(call, payment_method, product_id):
 def handle_download_callback(call, access_token):
     file_info = get_file_by_token(access_token)
     if not file_info:
-        bot.send_message(call.message.chat.id, "File not found or your payment is not yet confirmed.")
-        return
+        bot.send_message(call.message.chat.id, "File not found or your payment is not yet confirmed."); return
     file_path, file_name = file_info
     try:
         with open(file_path, 'rb') as f:
@@ -498,8 +543,7 @@ def handle_download_callback(call, access_token):
 def handle_download(message, access_token):
     file_info = get_file_by_token(access_token)
     if not file_info:
-        bot.send_message(message.chat.id, "File not found or your payment is not yet confirmed.")
-        return
+        bot.send_message(message.chat.id, "File not found or your payment is not yet confirmed."); return
     file_path, file_name = file_info
     try:
         with open(file_path, 'rb') as f:
