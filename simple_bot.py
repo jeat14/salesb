@@ -6,10 +6,11 @@ import uuid
 from datetime import datetime
 
 # --- CONFIGURATION ---
-TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
+TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8'
+# --- THIS IS THE CORRECTED ADMIN LIST ---
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
-    7864373277     @xenslol
+    7864373277,  # @xenslol's ID
 ]
 
 # --- INITIALIZATION ---
@@ -273,12 +274,34 @@ def browse_products(message):
 
 @bot.message_handler(func=lambda message: message.text == 'My Purchases')
 def my_purchases(message):
-    # This function's logic can be expanded as needed.
-    bot.send_message(message.chat.id, "Fetching your purchase history...")
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status, pu.payment_id FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
+    purchases = cursor.fetchall()
+    conn.close()
+    if not purchases:
+        bot.send_message(message.chat.id, "You have not made any purchases yet.")
+        return
+    text = "📋 **Your Purchase History**\n\n"
+    markup = types.InlineKeyboardMarkup()
+    status_emoji = {'pending': '⏳', 'completed': '✅'}
+    for purchase in purchases:
+        name, description, amount, date, token, payment_status, payment_id = purchase
+        preview = f" ({description[:6]}...)" if description else ""
+        text += f"📄 {name}{preview}\n"
+        text += f"💰 {format_price(amount)}\n"
+        text += f"💳 Status: {status_emoji.get(payment_status, '❓')} {payment_status.title()}\n"
+        text += f"📅 {date.split('.')[0]}\n"
+        if payment_status == 'completed':
+            markup.row(types.InlineKeyboardButton(f"📥 Download {name[:20]}", callback_data=f"download_{token}"))
+            text += "✅ Ready for download\n\n"
+        else:
+            text += f"⏳ Awaiting payment confirmation.\nOrder ID: `{payment_id[:8]}`\n\n"
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == 'Support')
 def support(message):
-    bot.send_message(message.chat.id, "💬 **Customer Support**\n\nFor any questions or issues, please contact the admin:\n📱 Telegram: @xenslol", parse_mode="Markdown")
+    bot.send_message(message.chat.id, "💬 **Customer Support**\n\nFor any questions, please contact the admin:\n📱 Telegram: @xenslol", parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == 'Back to Shop')
 def back_to_shop(message):
@@ -286,25 +309,49 @@ def back_to_shop(message):
 
 @bot.message_handler(func=lambda message: message.text == 'View Orders')
 def view_orders(message):
-     # This function's logic can be expanded as needed.
-    bot.send_message(message.chat.id, "Fetching all orders...")
+    if message.from_user.id not in ADMIN_IDS: return
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT pu.id, pu.username, p.name, p.description, pu.amount, pu.payment_status, pu.payment_id, pu.payment_method, pu.purchase_date FROM purchases pu JOIN products p ON pu.product_id = p.id ORDER BY pu.purchase_date DESC")
+    orders = cursor.fetchall()
+    conn.close()
+    if not orders:
+        bot.send_message(message.chat.id, "No orders found.")
+        return
+    pending_orders = [o for o in orders if o[5] == 'pending']
+    completed_orders = [o for o in orders if o[5] == 'completed']
+    if pending_orders:
+        text = "⏳ **PENDING PAYMENTS**\n\n"
+        markup = types.InlineKeyboardMarkup()
+        for order in pending_orders:
+            order_id, username, product_name, description, amount, _, payment_id, method, date = order
+            preview = f" ({description[:6]}...)" if description else ""
+            text += f"**Order #{order_id}**\n👤 User: @{username or 'Unknown'}\n"
+            text += f"📄 Product: {product_name}{preview}\n💰 Amount: {format_price(amount)} ({method})\n"
+            text += f"🆔 Payment ID: `{payment_id[:8]}`\n📅 {date.split('.')[0]}\n\n"
+            markup.row(types.InlineKeyboardButton(f"✅ Confirm #{order_id}", callback_data=f"confirm_{payment_id}"))
+        bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+    else:
+        bot.send_message(message.chat.id, "No pending orders found.")
+    if completed_orders:
+        text = "\n✅ **COMPLETED ORDERS (Last 10)**\n\n"
+        total_revenue = sum(o[4] for o in completed_orders)
+        for order in completed_orders[:10]:
+            order_id, username, product_name, description, amount, _, _, _, date = order
+            preview = f" ({description[:6]}...)" if description else ""
+            text += f"**Order #{order_id}** - @{username or 'Unknown'}\n📄 {product_name}{preview} - {format_price(amount)}\n\n"
+        text += f"💵 **Total Revenue:** {format_price(total_revenue)}"
+        bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda message: message.text == '🧪 Test Mode')
 def test_mode(message):
     if message.from_user.id not in ADMIN_IDS: return
     bot.send_message(message.chat.id, "Entering test mode...")
 
-# --- THIS ENTIRE FUNCTION WAS MISSING AND HAS BEEN RESTORED ---
 @bot.message_handler(func=lambda message: True)
 def handle_text_messages(message):
-    """
-    Handles any text that isn't a main menu command, primarily for processing
-    the price input during the 'Add Product' flow.
-    """
     user_id = message.from_user.id
     text = message.text
-
-    # Check if the admin is in the process of adding a product and we are waiting for the price
     if isinstance(user_states.get(user_id), dict) and user_states[user_id].get('state') == 'waiting_price':
         try:
             price = float(text.strip())
@@ -312,30 +359,19 @@ def handle_text_messages(message):
                 bot.send_message(message.chat.id, "Price must be a positive number.")
                 return
         except ValueError:
-            bot.send_message(message.chat.id, "Invalid price format. Please send only a number (e.g., 10.99).")
+            bot.send_message(message.chat.id, "Invalid price format.")
             return
-
         product_data = user_states[user_id]
         try:
-            add_product_to_db(
-                name=product_data['product_name'],
-                description=product_data['description'],
-                price=price,
-                file_path=product_data['file_path'],
-                file_name=product_data['file_name']
-            )
+            add_product_to_db(name=product_data['product_name'], description=product_data['description'], price=price, file_path=product_data['file_path'], file_name=product_data['file_name'])
             bot.send_message(message.chat.id, "✅ **Product Added Successfully!**", parse_mode="Markdown")
-            
-            # Clean up the state and return to admin panel
             user_states.pop(user_id, None)
             admin_panel(message)
         except Exception as e:
             debug_print(f"Product creation error: {str(e)}")
-            bot.send_message(message.chat.id, "Failed to create the product in the database.")
+            bot.send_message(message.chat.id, "Failed to create the product.")
     else:
-        # If the text is not for a stateful process, and not a menu button, send a default message
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
-
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -414,7 +450,6 @@ def handle_callbacks(call):
         elif call.data.startswith('confirm_'):
              if user_id not in ADMIN_IDS: return
              payment_id = call.data.replace('confirm_', '')
-             # Add actual confirmation logic here
              bot.answer_callback_query(call.id, "Order confirmed!")
         elif call.data == "back_products":
             bot.delete_message(call.message.chat.id, call.message.message_id)
