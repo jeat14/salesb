@@ -6,11 +6,14 @@ import uuid
 from datetime import datetime
 
 # --- CONFIGURATION ---
-TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE'
+TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8' # Replace with your bot's token
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
     7864373277,  # @xenslol's ID
 ]
+# --- NEW PAYPAL CONFIGURATION ---
+PAYPAL_USERNAME = "CaitlinGetrajdman367" # Your PayPal.me username without the @
+
 
 # --- INITIALIZATION ---
 bot = telebot.TeleBot(TOKEN)
@@ -143,7 +146,6 @@ def confirm_payment(payment_id):
     return rows > 0
 
 def get_purchase_by_payment_id(payment_id):
-    """Gets purchase details, including the product_id."""
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT pu.id, pu.user_id, pu.product_id, pu.payment_status, pu.access_token, p.name FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.payment_id = ?", (payment_id,))
@@ -417,7 +419,12 @@ def handle_callbacks(call):
             desc_preview = f"{description[:6]}..." if description and len(description) > 6 else (description or "No description.")
             product_text = f"📄 **{name}**\n\n💰 **Price:** {format_price(price)}\n📝 **Description:**\n{desc_preview}\n\nChoose your payment method:"
             markup = types.InlineKeyboardMarkup()
-            markup.row(types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"), types.InlineKeyboardButton("₿ Crypto", callback_data=f"buy_crypto_{product_id}"))
+            # --- ADDED PAYPAL BUTTON ---
+            markup.row(
+                types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"),
+                types.InlineKeyboardButton("₿ Crypto", callback_data=f"buy_crypto_{product_id}")
+            )
+            markup.row(types.InlineKeyboardButton(f"🅿️ PayPal", callback_data=f"buy_paypal_{product_id}"))
             markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
             bot.edit_message_text(product_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
@@ -432,7 +439,7 @@ def handle_callbacks(call):
             if balance >= price:
                 markup = types.InlineKeyboardMarkup()
                 markup.row(types.InlineKeyboardButton(f"Pay with Balance ({format_price(balance)})", callback_data=f"pay_balance_{product_id}"))
-                markup.row(types.InlineKeyboardButton("Pay with CashApp/Crypto instead", callback_data=f"pay_external_{payment_method}_{product_id}"))
+                markup.row(types.InlineKeyboardButton("Pay with External Method", callback_data=f"pay_external_{payment_method}_{product_id}"))
                 markup.row(types.InlineKeyboardButton("Cancel", callback_data="back_products"))
                 bot.edit_message_text("You have enough funds to buy this item.\n\nHow would you like to pay?", call.message.chat.id, call.message.message_id, reply_markup=markup)
             else:
@@ -450,12 +457,12 @@ def handle_callbacks(call):
                 new_balance = get_user_balance(user_id)
                 payment_id, access_token, _ = create_purchase(user_id, username, product_id, 'balance', price)
                 confirm_payment(payment_id)
-                deactivate_product_in_db(product_id) # Deactivate product after sale
+                deactivate_product_in_db(product_id)
                 success_text = f"✅ Purchase Successful!\n\nYour new balance is {format_price(new_balance)}.\n\nHere is your download:"
                 bot.edit_message_text(success_text, call.message.chat.id, call.message.message_id, reply_markup=None)
                 handle_download_callback(call, access_token)
             else:
-                bot.edit_message_text("Your balance is no longer sufficient for this purchase.", call.message.chat.id, call.message.message_id, reply_markup=None)
+                bot.edit_message_text("Your balance is no longer sufficient.", call.message.chat.id, call.message.message_id, reply_markup=None)
 
         elif call.data.startswith('pay_external_'):
             parts = call.data.split('_')
@@ -476,13 +483,11 @@ def handle_callbacks(call):
             payment_id = call.data.replace('confirm_', '')
             purchase = get_purchase_by_payment_id(payment_id)
             if not purchase:
-                bot.answer_callback_query(call.id, "Purchase not found.")
-                return
+                bot.answer_callback_query(call.id, "Purchase not found."); return
             
             _, customer_user_id, product_id_to_deactivate, _, access_token, product_name = purchase
-
             if confirm_payment(payment_id):
-                deactivate_product_in_db(product_id_to_deactivate) # Deactivate product after sale
+                deactivate_product_in_db(product_id_to_deactivate)
                 bot.answer_callback_query(call.id, "✅ Payment confirmed and product removed from shop!")
                 bot.edit_message_text(f"✅ Payment confirmed for order of '{product_name}'.", call.message.chat.id, call.message.message_id, reply_markup=None)
                 try:
@@ -516,14 +521,21 @@ def show_external_payment_info(call, payment_method, product_id):
         bot.answer_callback_query(call.id, "Product not found"); return
     payment_id, _, _ = create_purchase(call.from_user.id, call.from_user.username, product_id, payment_method, product[3])
     payment_text = f"**💳 Payment Required**\n\n📄 **Product:** {product[1]}\n💰 **Amount:** {format_price(product[3])}\n\n"
+    
+    # --- ADDED PAYPAL INSTRUCTIONS ---
     if payment_method == 'cashapp':
         payment_text += f"Send payment to `$shonwithcash`\nIn the 'For' / 'Note' section, you **MUST** include this ID:\n`{payment_id[:8]}`"
+    elif payment_method == 'paypal':
+        paypal_link = f"https://paypal.me/{PAYPAL_USERNAME}"
+        payment_text += f"Send payment via the link below:\n{paypal_link}\n\n"
+        payment_text += f"In the 'Add a note' section, you **MUST** include this ID:\n`{payment_id[:8]}`"
     else: # crypto
         payment_text += "**Send the exact amount to one of the addresses below.**\n\n" \
                         "🟡 **Bitcoin (BTC):**\n`bc1q9nc2clammklw8jtvmzfqxg4e9exlcc7ww7e64e`\n\n" \
                         "🔵 **Litecoin (LTC):**\n`LZXDSYuxo2XZroFMgdQPRxfi2vjV3ncq3r`\n\n" \
                         "🟣 **Ethereum (ETH):**\n`0xf812b0466ea671B3FadC75E9624dFeFd507F22C8`\n\n" \
                         f"After sending, an admin will confirm your payment. Your Order ID is `{payment_id[:8]}`."
+    
     markup = types.InlineKeyboardMarkup()
     markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
     bot.edit_message_text(payment_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
