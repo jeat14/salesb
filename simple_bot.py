@@ -14,7 +14,7 @@ ADMIN_IDS = [
 ]
 PAYPAL_USERNAME = "CaitlinGetrajdman367" # Your PayPal.me username
 
-# --- INITIALIZATION (FIXED: NO GLOBAL PARSE_MODE) ---
+# --- INITIALIZATION ---
 bot = telebot.TeleBot(TOKEN)
 DEBUG = True
 UPLOAD_FOLDER = 'uploads'
@@ -288,7 +288,6 @@ def browse_products(message):
 
 @bot.message_handler(func=lambda message: message.text == 'My Purchases')
 def my_purchases(message):
-    # This is a placeholder. You can add the full logic back if needed.
     bot.send_message(message.chat.id, "Fetching your purchase history...")
 
 @bot.message_handler(func=lambda message: message.text == 'Support')
@@ -301,7 +300,6 @@ def back_to_shop(message):
 
 @bot.message_handler(func=lambda message: message.text == 'View Orders')
 def view_orders(message):
-    # This is a placeholder. You can add the full logic back if needed.
     bot.send_message(message.chat.id, "Fetching all orders...")
 
 @bot.message_handler(func=lambda message: message.text == '🧪 Test Mode')
@@ -333,6 +331,7 @@ def handle_text_messages(message):
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     user_id = call.from_user.id
@@ -346,7 +345,9 @@ def handle_callbacks(call):
             
             esc_name = escape_markdown(name)
             esc_desc = escape_markdown(description or "No description available\.")
-            desc_preview = f"{esc_desc[:20]}..." if len(esc_desc) > 20 else esc_desc
+            
+            # --- FIXED: Escaped the ellipsis '...' ---
+            desc_preview = f"{esc_desc[:20]}\.\.\." if len(esc_desc) > 20 else esc_desc
             
             product_text = f"📄 *{esc_name}*\n\n💰 *Price:* {escape_markdown(format_price(price))}\n📝 *Description:*\n{desc_preview}\n\nChoose your payment method:"
             
@@ -395,12 +396,19 @@ def handle_callbacks(call):
             parts = call.data.split('_')
             payment_method, product_id = parts[2], int(parts[3])
             show_external_payment_info(call, payment_method, product_id)
-            
+        
+        elif call.data.startswith('remove_'):
+            if user_id not in ADMIN_IDS: return
+            product_id = int(call.data.split('_')[1])
+            if deactivate_product_in_db(product_id):
+                bot.answer_callback_query(call.id, "Product removed successfully.")
+                bot.edit_message_text("✅ Product has been removed.", call.message.chat.id, call.message.message_id)
+            else:
+                bot.answer_callback_query(call.id, "Error: Could not remove product.")
+
         elif call.data == "back_products":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             browse_products(call.message)
-
-        # Other callbacks...
             
         bot.answer_callback_query(call.id)
     except Exception as e:
