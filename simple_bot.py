@@ -286,9 +286,41 @@ def browse_products(message):
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
     bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
 
+# --- 'MY PURCHASES' HANDLER (FULLY RESTORED) ---
 @bot.message_handler(func=lambda message: message.text == 'My Purchases')
 def my_purchases(message):
-    bot.send_message(message.chat.id, "Fetching your purchase history...")
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
+    purchases = cursor.fetchall()
+    conn.close()
+    if not purchases:
+        bot.send_message(message.chat.id, "You have not made any purchases yet\.")
+        return
+    
+    text = "*📋 Your Purchase History*\n\n"
+    markup = types.InlineKeyboardMarkup()
+    status_emoji = {'pending': '⏳', 'completed': '✅'}
+    
+    for purchase in purchases:
+        name, description, amount, date, token, payment_status = purchase
+        
+        esc_name = escape_markdown(name)
+        preview = f" \({escape_markdown(description[:6])}\.\.\.\)" if description and len(description) > 6 else ""
+
+        text += f"📄 *{esc_name}*{preview}\n"
+        text += f"💰 {escape_markdown(format_price(amount))}\n"
+        text += f"💳 Status: {status_emoji.get(payment_status, '❓')} {escape_markdown(payment_status.title())}\n"
+        text += f"📅 {escape_markdown(date.split('.')[0])}\n"
+        
+        if payment_status == 'completed':
+            markup.row(types.InlineKeyboardButton(f"📥 Download {name[:20]}", callback_data=f"download_{token}"))
+            text += "✅ Ready for download\n\n"
+        else:
+            text += f"⏳ Awaiting payment confirmation\.\n\n"
+            
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="MarkdownV2")
+
 
 @bot.message_handler(func=lambda message: message.text == 'Support')
 def support(message):
@@ -300,6 +332,7 @@ def back_to_shop(message):
 
 @bot.message_handler(func=lambda message: message.text == 'View Orders')
 def view_orders(message):
+    # This is a placeholder. You can add the full logic back if needed.
     bot.send_message(message.chat.id, "Fetching all orders...")
 
 @bot.message_handler(func=lambda message: message.text == '🧪 Test Mode')
@@ -345,8 +378,6 @@ def handle_callbacks(call):
             balance = get_user_balance(user_id)
             
             esc_name = escape_markdown(name)
-            
-            # --- FIXED: Description preview length and ellipsis escaping ---
             esc_desc = escape_markdown(description or "No description available\.")
             desc_preview = f"{esc_desc[:6]}\.\.\." if len(esc_desc) > 6 else esc_desc
             
@@ -354,10 +385,9 @@ def handle_callbacks(call):
             
             markup = types.InlineKeyboardMarkup()
 
-            # --- FIXED: Check balance immediately and show the correct options ---
             if balance >= price:
                 product_text += f"\n\n*You have enough funds to buy this item\!*"
-                markup.row(types.InlineKeyboardButton(f"Pay with Balance ({format_price(balance)})", callback_data=f"pay_balance_{product_id}"))
+                markup.row(types.InlineKeyboardButton(f"Pay with Balance ({format_price(price)})", callback_data=f"pay_balance_{product_id}"))
                 markup.row(types.InlineKeyboardButton("Use Other Method instead", callback_data=f"show_external_options_{product_id}"))
             else:
                 product_text += "\n\nChoose your payment method:"
@@ -369,13 +399,10 @@ def handle_callbacks(call):
 
         elif call.data.startswith('show_external_options_'):
             product_id = int(call.data.split('_')[3])
-            product = get_product(product_id)
-            if not product: bot.answer_callback_query(call.id, "Product not found"); return
-            
             markup = types.InlineKeyboardMarkup()
             markup.row(types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"), types.InlineKeyboardButton("₿ Crypto", callback_data=f"buy_crypto_{product_id}"))
             markup.row(types.InlineKeyboardButton(f"🅿️ PayPal", callback_data=f"buy_paypal_{product_id}"))
-            markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
+            markup.row(types.InlineKeyboardButton("🔙 Back", callback_data=f"product_{product_id}"))
             bot.edit_message_text("Please choose your external payment method:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
         elif call.data.startswith('buy_'):
@@ -384,7 +411,6 @@ def handle_callbacks(call):
             show_external_payment_info(call, payment_method, product_id)
 
         elif call.data.startswith('pay_balance_'):
-            # (Logic for paying with balance remains the same)
             product_id = int(call.data.split('_')[2])
             product = get_product(product_id)
             if not product: bot.answer_callback_query(call.id, "Product not found\."); return
@@ -403,8 +429,28 @@ def handle_callbacks(call):
             else:
                 bot.edit_message_text("Your balance is no longer sufficient\.", call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
         
-        # (The rest of the callback handlers)
+        elif call.data.startswith('remove_'):
+            if user_id not in ADMIN_IDS: return
+            product_id = int(call.data.split('_')[1])
+            if deactivate_product_in_db(product_id):
+                bot.answer_callback_query(call.id, "Product removed successfully.")
+                bot.edit_message_text("✅ Product has been removed.", call.message.chat.id, call.message.message_id)
+            else:
+                bot.answer_callback_query(call.id, "Error: Could not remove product.")
 
+        elif call.data.startswith('download_'):
+            access_token = call.data.replace('download_', '')
+            handle_download_callback(call, access_token)
+
+        # --- 'BACK' BUTTON HANDLER (RESTORED) ---
+        elif call.data == "back_products":
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            browse_products(call.message)
+            
+        elif call.data == "back_admin":
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            admin_panel(call.message)
+            
         bot.answer_callback_query(call.id)
     except Exception as e:
         debug_print(f"Callback error: {str(e)}")
@@ -440,7 +486,27 @@ def show_external_payment_info(call, payment_method, product_id):
     markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
     bot.edit_message_text(payment_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="MarkdownV2")
 
-# (Other functions like download handlers etc.)
+def handle_download_callback(call, access_token):
+    file_info = get_file_by_token(access_token)
+    if not file_info: bot.send_message(call.message.chat.id, "File not found or your payment is not yet confirmed\."); return
+    file_path, file_name = file_info
+    try:
+        with open(file_path, 'rb') as f:
+            bot.send_document(call.message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}", parse_mode="MarkdownV2")
+    except Exception as e:
+        debug_print(f"Download error: {str(e)}")
+        bot.send_message(call.message.chat.id, "Failed to send the file\. Please contact support\.")
+
+def handle_download(message, access_token):
+    file_info = get_file_by_token(access_token)
+    if not file_info: bot.send_message(message.chat.id, "File not found or your payment is not yet confirmed\."); return
+    file_path, file_name = file_info
+    try:
+        with open(file_path, 'rb') as f:
+            bot.send_document(message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}", parse_mode="MarkdownV2")
+    except Exception as e:
+        debug_print(f"Download error: {str(e)}")
+        bot.send_message(message.chat.id, "Failed to send the file\. Please contact support\.")
 
 if __name__ == "__main__":
     init_database()
