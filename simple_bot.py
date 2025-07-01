@@ -7,15 +7,15 @@ from datetime import datetime
 import re
 
 # --- CONFIGURATION ---
-TOKEN = '8060770660:AAHh2Y1YH0GR2F6hIhC3Ip3r5RIN1xtcgcE' # Replace with your bot's token
+TOKEN = '8108658761:AAE_2O5d8zstSITUiMoN9jBK2oyGRRg7QX8' # Replace with your bot's token
 ADMIN_IDS = [
     7481885595,  # @packoa's ID
     7864373277,  # @xenslol's ID
 ]
 PAYPAL_USERNAME = "CaitlinGetrajdman367" # Your PayPal.me username
 
-# --- INITIALIZATION ---
-bot = telebot.TeleBot(TOKEN, parse_mode='MarkdownV2') # Set default parse mode for all messages
+# --- INITIALIZATION (FIXED: NO GLOBAL PARSE_MODE) ---
+bot = telebot.TeleBot(TOKEN)
 DEBUG = True
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
@@ -39,7 +39,7 @@ def escape_markdown(text: str) -> str:
 
 def save_file(file_content, original_filename):
     file_ext = os.path.splitext(original_filename)[1].lower()
-    if file_ext != '.txt': return None, "Only \.txt files are allowed"
+    if file_ext != '.txt': return None, "Only .txt files are allowed"
     secure_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = os.path.join(UPLOAD_FOLDER, secure_filename)
     with open(file_path, 'wb') as f: f.write(file_content)
@@ -160,11 +160,11 @@ def get_file_by_token(access_token):
     return res
 
 
-# --- BOT MESSAGE HANDLERS ---
+# --- BOT MESSAGE HANDLERS (DEFINED IN CORRECT ORDER) ---
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     get_or_create_user(message.from_user.id, message.from_user.username)
-    debug_print(f"Start command from user {message.from_user.id}")
     if len(message.text.split()) > 1:
         token = message.text.split()[1]
         if token.startswith('download_'):
@@ -176,7 +176,7 @@ def send_welcome(message):
     if message.from_user.id in ADMIN_IDS:
         markup.row('Admin Panel')
     welcome_text = f"Welcome to Retrinity cc shop, {escape_markdown(message.from_user.first_name)}\!"
-    bot.reply_to(message, welcome_text, reply_markup=markup)
+    bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode="MarkdownV2")
 
 @bot.message_handler(commands=['addfunds'])
 def add_funds_command(message):
@@ -185,62 +185,62 @@ def add_funds_command(message):
         return
     parts = message.text.split()
     if len(parts) != 3:
-        bot.reply_to(message, "Usage:\n/addfunds `<@username_or_id> <amount>`")
+        bot.reply_to(message, "Usage:\n/addfunds `<@username_or_id> <amount>`", parse_mode="MarkdownV2")
         return
     target_identifier = parts[1]
     target_user_id = None
     if target_identifier.startswith('@'):
         target_user_id = get_user_by_username(target_identifier)
         if not target_user_id:
-            bot.reply_to(message, f"User `{escape_markdown(target_identifier)}` not found\. They must have started the bot at least once\.")
+            bot.reply_to(message, f"User `{escape_markdown(target_identifier)}` not found\. They must have started the bot at least once\.", parse_mode="MarkdownV2")
             return
     elif target_identifier.isdigit():
         target_user_id = int(target_identifier)
     else:
-        bot.reply_to(message, "Invalid user identifier\. Please use a User ID or an @username\.")
+        bot.reply_to(message, "Invalid user identifier\. Please use a User ID or an @username\.", parse_mode="MarkdownV2")
         return
     try:
         amount = float(parts[2])
     except ValueError:
-        bot.reply_to(message, "Invalid Amount\. Please use a number\.")
+        bot.reply_to(message, "Invalid Amount\. Please use a number\.", parse_mode="MarkdownV2")
         return
     update_user_balance(target_user_id, amount)
     new_balance = get_user_balance(target_user_id)
-    bot.reply_to(message, f"✅ Successfully added `{escape_markdown(format_price(amount))}` to user `{escape_markdown(target_identifier)}`\.\nTheir new balance is: `{escape_markdown(format_price(new_balance))}`")
+    bot.reply_to(message, f"✅ Successfully added `{escape_markdown(format_price(amount))}` to user `{escape_markdown(target_identifier)}`\.\nTheir new balance is: `{escape_markdown(format_price(new_balance))}`", parse_mode="MarkdownV2")
     try:
-        bot.send_message(target_user_id, f"An admin has added `{escape_markdown(format_price(amount))}` to your balance\.\nYour new balance is: `{escape_markdown(format_price(new_balance))}`")
+        bot.send_message(target_user_id, f"An admin has added `{escape_markdown(format_price(amount))}` to your balance\.\nYour new balance is: `{escape_markdown(format_price(new_balance))}`", parse_mode="MarkdownV2")
     except Exception as e:
         debug_print(f"Could not notify user {target_user_id} about added funds: {e}")
 
 @bot.message_handler(func=lambda message: message.text == 'My Balance')
 def show_balance_handler(message):
     balance = get_user_balance(message.from_user.id)
-    bot.send_message(message.chat.id, f"💰 Your current balance is: *{escape_markdown(format_price(balance))}*")
+    bot.send_message(message.chat.id, f"💰 Your current balance is: *{escape_markdown(format_price(balance))}*", parse_mode="MarkdownV2")
 
 @bot.message_handler(func=lambda message: message.text == 'Admin Panel')
 def admin_panel(message):
     if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "Access denied.", parse_mode=None)
+        bot.reply_to(message, "Access denied.")
         return
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('Add Product', 'Remove Product')
     markup.row('View Orders', '🧪 Test Mode')
     markup.row('Back to Shop')
     user_states.pop(message.from_user.id, None)
-    bot.send_message(message.chat.id, "Admin Panel\n\nSelect an option:", reply_markup=markup, parse_mode=None)
+    bot.send_message(message.chat.id, "Admin Panel\n\nSelect an option:", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == 'Add Product')
 def add_product_start(message):
     if message.from_user.id not in ADMIN_IDS: return
     user_states[message.from_user.id] = 'waiting_file'
-    bot.send_message(message.chat.id, "Please upload the .txt file you want to sell.", parse_mode=None)
+    bot.send_message(message.chat.id, "Please upload the .txt file you want to sell.")
 
 @bot.message_handler(func=lambda message: message.text == 'Remove Product')
 def remove_product_start(message):
     if message.from_user.id not in ADMIN_IDS: return
     products = get_products()
     if not products:
-        bot.send_message(message.chat.id, "There are no active products to remove.", parse_mode=None)
+        bot.send_message(message.chat.id, "There are no active products to remove.")
         return
     markup = types.InlineKeyboardMarkup()
     for p in products:
@@ -248,51 +248,52 @@ def remove_product_start(message):
         button_text = f"❌ {name} - {format_price(price)}"
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"remove_{product_id}"))
     markup.row(types.InlineKeyboardButton("🔙 Back to Admin", callback_data="back_admin"))
-    bot.send_message(message.chat.id, "Select a product to remove from the shop:", reply_markup=markup, parse_mode=None)
+    bot.send_message(message.chat.id, "Select a product to remove from the shop:", reply_markup=markup)
 
 @bot.message_handler(content_types=['document'])
 def handle_file_upload(message):
     user_id = message.from_user.id
     if user_id not in ADMIN_IDS or user_states.get(user_id) != 'waiting_file': return
     if not message.document.file_name.lower().endswith('.txt'):
-        bot.send_message(message.chat.id, "Error: Only .txt files are accepted.", parse_mode=None)
+        bot.send_message(message.chat.id, "Error: Only .txt files are accepted.")
         return
     try:
         file_info = bot.get_file(message.document.file_id)
         file_content = bot.download_file(file_info.file_path)
         file_path, error = save_file(file_content, message.document.file_name)
         if error:
-            bot.send_message(message.chat.id, f"Error: {error}", parse_mode=None)
+            bot.send_message(message.chat.id, f"Error: {error}")
             return
         product_name = os.path.splitext(message.document.file_name)[0]
         try: description = file_content.decode('utf-8')
         except: description = "Unable to read file content."
         user_states[user_id] = {'state': 'waiting_price', 'file_path': file_path, 'file_name': message.document.file_name, 'product_name': product_name, 'description': description}
-        bot.send_message(message.chat.id, f"File {message.document.file_name} uploaded.\nNow, please enter the price for this item.", parse_mode=None)
+        bot.send_message(message.chat.id, f"File {message.document.file_name} uploaded.\nNow, please enter the price for this item.")
     except Exception as e:
         debug_print(f"File upload error: {str(e)}")
-        bot.send_message(message.chat.id, "An error occurred during file upload.", parse_mode=None)
+        bot.send_message(message.chat.id, "An error occurred during file upload.")
 
 @bot.message_handler(func=lambda message: message.text == 'Browse Products')
 def browse_products(message):
     products = get_products()
     if not products:
-        bot.send_message(message.chat.id, "No products available.", parse_mode=None)
+        bot.send_message(message.chat.id, "No products available.")
         return
     markup = types.InlineKeyboardMarkup()
     for p in products:
         product_id, name, desc, price, _, _, _, _ = p
         button_text = f"{name} ({format_price(price)})"
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
-    bot.send_message(message.chat.id, "Available Products:", reply_markup=markup, parse_mode=None)
+    bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: message.text == 'My Purchases')
 def my_purchases(message):
-    bot.send_message(message.chat.id, "Fetching your purchase history...", parse_mode=None)
+    # This is a placeholder. You can add the full logic back if needed.
+    bot.send_message(message.chat.id, "Fetching your purchase history...")
 
 @bot.message_handler(func=lambda message: message.text == 'Support')
 def support(message):
-    bot.send_message(message.chat.id, "For any questions, please contact the admin: @xenslol", parse_mode=None)
+    bot.send_message(message.chat.id, "For any questions, please contact the admin: @xenslol")
 
 @bot.message_handler(func=lambda message: message.text == 'Back to Shop')
 def back_to_shop(message):
@@ -300,12 +301,13 @@ def back_to_shop(message):
 
 @bot.message_handler(func=lambda message: message.text == 'View Orders')
 def view_orders(message):
-    bot.send_message(message.chat.id, "Fetching all orders...", parse_mode=None)
+    # This is a placeholder. You can add the full logic back if needed.
+    bot.send_message(message.chat.id, "Fetching all orders...")
 
 @bot.message_handler(func=lambda message: message.text == '🧪 Test Mode')
 def test_mode(message):
     if message.from_user.id not in ADMIN_IDS: return
-    bot.send_message(message.chat.id, "Entering test mode...", parse_mode=None)
+    bot.send_message(message.chat.id, "Entering test mode...")
 
 @bot.message_handler(func=lambda message: True)
 def handle_text_messages(message):
@@ -314,23 +316,22 @@ def handle_text_messages(message):
         try:
             price = float(message.text.strip())
             if price <= 0:
-                bot.send_message(message.chat.id, "Price must be a positive number.", parse_mode=None)
+                bot.send_message(message.chat.id, "Price must be a positive number.")
                 return
         except ValueError:
-            bot.send_message(message.chat.id, "Invalid price format.", parse_mode=None)
+            bot.send_message(message.chat.id, "Invalid price format.")
             return
         product_data = user_states[user_id]
         try:
             add_product_to_db(name=product_data['product_name'], description=product_data['description'], price=price, file_path=product_data['file_path'], file_name=product_data['file_name'])
-            bot.send_message(message.chat.id, "✅ Product Added Successfully!", parse_mode=None)
+            bot.send_message(message.chat.id, "✅ Product Added Successfully!")
             user_states.pop(user_id, None)
             admin_panel(message)
         except Exception as e:
             debug_print(f"Product creation error: {str(e)}")
-            bot.send_message(message.chat.id, "Failed to create the product.", parse_mode=None)
+            bot.send_message(message.chat.id, "Failed to create the product.")
     else:
-        bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.", parse_mode=None)
-
+        bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -339,7 +340,7 @@ def handle_callbacks(call):
         if call.data.startswith('product_'):
             product_id = int(call.data.split('_')[1])
             product = get_product(product_id)
-            if not product: bot.edit_message_text("Product not found\.", call.message.chat.id, call.message.message_id); return
+            if not product: bot.edit_message_text("Product not found\.", call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2"); return
             
             _, name, description, price, _, _, _, _ = product
             
@@ -353,7 +354,7 @@ def handle_callbacks(call):
             markup.row(types.InlineKeyboardButton("💳 CashApp", callback_data=f"buy_cashapp_{product_id}"), types.InlineKeyboardButton("₿ Crypto", callback_data=f"buy_crypto_{product_id}"))
             markup.row(types.InlineKeyboardButton(f"🅿️ PayPal", callback_data=f"buy_paypal_{product_id}"))
             markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
-            bot.edit_message_text(product_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+            bot.edit_message_text(product_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="MarkdownV2")
 
         elif call.data.startswith('buy_'):
             parts = call.data.split('_')
@@ -367,7 +368,7 @@ def handle_callbacks(call):
                 markup.row(types.InlineKeyboardButton(f"Pay with Balance ({format_price(price)})", callback_data=f"pay_balance_{product_id}"))
                 markup.row(types.InlineKeyboardButton("Pay with External Method", callback_data=f"pay_external_{payment_method}_{product_id}"))
                 markup.row(types.InlineKeyboardButton("Cancel", callback_data="back_products"))
-                bot.edit_message_text("You have enough funds to buy this item\.\n\nHow would you like to pay?", call.message.chat.id, call.message.message_id)
+                bot.edit_message_text("You have enough funds to buy this item\.\n\nHow would you like to pay?", call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
             else:
                 show_external_payment_info(call, payment_method, product_id)
 
@@ -385,15 +386,21 @@ def handle_callbacks(call):
                 deactivate_product_in_db(product_id)
                 
                 success_text = f"✅ *Purchase Successful\!*\n\nYour new balance is *{escape_markdown(format_price(new_balance))}*\.\n\nHere is your download:"
-                bot.edit_message_text(success_text, call.message.chat.id, call.message.message_id, reply_markup=None)
+                bot.edit_message_text(success_text, call.message.chat.id, call.message.message_id, reply_markup=None, parse_mode="MarkdownV2")
                 handle_download_callback(call, access_token)
             else:
-                bot.edit_message_text("Your balance is no longer sufficient\.", call.message.chat.id, call.message.message_id, reply_markup=None)
+                bot.edit_message_text("Your balance is no longer sufficient\.", call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
         
         elif call.data.startswith('pay_external_'):
             parts = call.data.split('_')
             payment_method, product_id = parts[2], int(parts[3])
             show_external_payment_info(call, payment_method, product_id)
+            
+        elif call.data == "back_products":
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+            browse_products(call.message)
+
+        # Other callbacks...
             
         bot.answer_callback_query(call.id)
     except Exception as e:
@@ -409,7 +416,7 @@ def show_external_payment_info(call, payment_method, product_id):
     
     esc_name = escape_markdown(product[1])
     esc_price = escape_markdown(format_price(product[3]))
-    esc_payment_id = payment_id[:8] # This is for code block, no need to escape
+    esc_payment_id = payment_id[:8]
 
     payment_text = f"*💳 Payment Required*\n\n📄 *Product:* {esc_name}\n💰 *Amount:* {esc_price}\n\n"
     
@@ -428,7 +435,7 @@ def show_external_payment_info(call, payment_method, product_id):
     
     markup = types.InlineKeyboardMarkup()
     markup.row(types.InlineKeyboardButton("🔙 Back to Products", callback_data="back_products"))
-    bot.edit_message_text(payment_text, call.message.chat.id, call.message.message_id, reply_markup=markup)
+    bot.edit_message_text(payment_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="MarkdownV2")
 
 def handle_download_callback(call, access_token):
     file_info = get_file_by_token(access_token)
@@ -436,7 +443,7 @@ def handle_download_callback(call, access_token):
     file_path, file_name = file_info
     try:
         with open(file_path, 'rb') as f:
-            bot.send_document(call.message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}")
+            bot.send_document(call.message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}", parse_mode="MarkdownV2")
     except Exception as e:
         debug_print(f"Download error: {str(e)}")
         bot.send_message(call.message.chat.id, "Failed to send the file\. Please contact support\.")
@@ -447,7 +454,7 @@ def handle_download(message, access_token):
     file_path, file_name = file_info
     try:
         with open(file_path, 'rb') as f:
-            bot.send_document(message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}")
+            bot.send_document(message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}", parse_mode="MarkdownV2")
     except Exception as e:
         debug_print(f"Download error: {str(e)}")
         bot.send_message(message.chat.id, "Failed to send the file\. Please contact support\.")
