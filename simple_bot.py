@@ -32,12 +32,14 @@ def format_price(price):
     return f"${price:.2f}"
 
 def escape_markdown(text: str) -> str:
+    """Helper function to escape telegram markdown V2 characters."""
     if not isinstance(text, str):
         text = str(text)
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def save_individual_product_file(content):
+    """Saves a string content to a new unique txt file."""
     secure_filename = f"{uuid.uuid4()}.txt"
     file_path = os.path.join(UPLOAD_FOLDER, secure_filename)
     try:
@@ -48,11 +50,13 @@ def save_individual_product_file(content):
         return None, str(e)
 
 def get_card_type(card_number):
+    """Determines card type from the first digit."""
     if card_number.startswith('4'): return 'Visa'
     elif card_number.startswith('5'): return 'Mastercard'
     elif card_number.startswith('3'): return 'Amex'
     elif card_number.startswith('6'): return 'Discover'
     else: return 'Card'
+
 
 # --- DATABASE FUNCTIONS ---
 def init_database():
@@ -198,7 +202,7 @@ def send_welcome(message):
     markup.row('My Balance', 'Support')
     welcome_text = f"Welcome to Retrinity cc shop, {escape_markdown(message.from_user.first_name)}\!"
     if message.from_user.id in ADMIN_IDS:
-        welcome_text += "\n\n*Admin tip:* To add products, just upload a `\.txt` file\. Use `/addfunds` to manage balances\."
+        welcome_text += "\n\n*Admin tip:* To add items, upload a `\.txt` file\. Use `/addfunds`, `/users`, `/remove`, `/addfadmin`\."
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode="MarkdownV2")
 
 @bot.message_handler(commands=['addfunds'])
@@ -266,185 +270,4 @@ def manage_funds_admin_command(message):
         bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been demoted to a regular user\.", parse_mode="MarkdownV2")
 
 @bot.message_handler(commands=['users'])
-def list_users_command(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "This command is for admins only.")
-        return
-    users = get_all_users()
-    if not users:
-        bot.reply_to(message, "No users have interacted with the bot yet.")
-        return
-    file_content = "User ID,Username,Balance,Role\n"
-    for user in users:
-        user_id, username, balance, role = user
-        file_content += f"{user_id},{username or 'N/A'},{balance:.2f},{role}\n"
-    try:
-        with open("user_list.csv", "w", encoding="utf-8") as file:
-            file.write(file_content)
-        with open("user_list.csv", "rb") as file:
-            bot.send_document(message.chat.id, file, caption="Here is the list of all bot users.")
-        os.remove("user_list.csv")
-    except Exception as e:
-        debug_print(f"Failed to send user list file: {e}")
-
-@bot.message_handler(commands=['remove'])
-def remove_product_start(message):
-    if message.from_user.id not in ADMIN_IDS: return
-    products = get_products()
-    if not products:
-        bot.send_message(message.chat.id, "There are no active products to remove.")
-        return
-    markup = types.InlineKeyboardMarkup()
-    for p in products:
-        product_id, name, _, price, _, _, _, _ = p
-        markup.row(types.InlineKeyboardButton(f"❌ {name} - {format_price(price)}", callback_data=f"remove_{product_id}"))
-    markup.row(types.InlineKeyboardButton("🔙 Cancel", callback_data="cancel_action"))
-    bot.send_message(message.chat.id, "Select a product to remove from the shop:", reply_markup=markup)
-
-@bot.message_handler(content_types=['document'])
-def handle_document(message):
-    if message.from_user.id not in ADMIN_IDS: return
-    if not message.document.file_name.lower().endswith('.txt'):
-        bot.send_message(message.from_user.id, "Error: Only .txt files are accepted.")
-        return
-    user_states[message.from_user.id] = {
-        'state': 'admin_waiting_price',
-        'file_id': message.document.file_id,
-        'file_name': message.document.file_name
-    }
-    bot.send_message(message.from_user.id, f"File `{escape_markdown(message.document.file_name)}` received\. Please reply with the price for each item in this file\.", parse_mode="MarkdownV2")
-
-# --- General Text Handlers ---
-@bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    user_id = message.from_user.id
-    state_info = user_states.get(user_id)
-    if isinstance(state_info, dict) and state_info.get('state') == 'admin_waiting_price':
-        try:
-            price = float(message.text.strip())
-            if price <= 0:
-                bot.reply_to(message, "Price must be a positive number.")
-                return
-        except ValueError:
-            bot.reply_to(message, "Invalid price format.")
-            return
-        
-        bot.send_message(user_id, "Processing your bulk file, please wait...")
-        file_id = state_info['file_id']
-        base_product_name = os.path.splitext(state_info['file_name'])[0]
-        try:
-            downloaded_file_info = bot.get_file(file_id)
-            file_content = bot.download_file(downloaded_file_info.file_path)
-            lines = file_content.decode('utf-8').splitlines()
-            added_count, failed_count = 0, 0
-            for i, line in enumerate(lines):
-                line = line.strip()
-                if not line: continue
-                parts = line.split('|')
-                if len(parts) != 10:
-                    failed_count += 1; continue
-                try:
-                    card_number, exp_month, exp_year, cvv, holder, address, city, state, zip_code, country = [p.strip() for p in parts]
-                    card_type = get_card_type(card_number)
-                    product_name = f"{card_type} - {card_number[:6]} - {country}"
-                    product_description = f"Holder: {holder}\nAddress: {address}, {city}, {state}, {zip_code}, {country}\nExpires: {exp_month}/{exp_year}\nCVV: {cvv}"
-                    file_path, error = save_individual_product_file(line)
-                    if error:
-                        failed_count += 1; continue
-                    add_product_to_db(product_name, product_description, price, file_path, f"{product_name}.txt")
-                    added_count += 1
-                except Exception as e:
-                    failed_count += 1
-                    debug_print(f"Error processing line '{line}': {e}")
-            summary_message = f"✅ *Bulk Upload Complete*\n\nSuccessfully added: `{added_count}`\nFailed to process: `{failed_count}`"
-            bot.send_message(user_id, summary_message, parse_mode="MarkdownV2")
-        except Exception as e:
-            debug_print(f"File processing error: {str(e)}")
-            bot.send_message(user_id, "An error occurred while processing the file.")
-        finally:
-            user_states.pop(user_id, None)
-
-    elif message.text == 'Browse Products':
-        browse_products(message)
-    elif message.text == 'My Purchases':
-        my_purchases(message)
-    elif message.text == 'Support':
-        support(message)
-    elif message.text == 'My Balance':
-        show_balance_handler(message)
-    else:
-        bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
-
-def browse_products(message):
-    products = get_products()
-    if not products:
-        bot.send_message(message.chat.id, "No products available.")
-        return
-    markup = types.InlineKeyboardMarkup()
-    for p in products:
-        product_id, name, _, price, _, _, _, _ = p
-        markup.row(types.InlineKeyboardButton(f"{name} - {format_price(price)}", callback_data=f"product_{product_id}"))
-    bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
-
-def my_purchases(message):
-    conn = sqlite3.connect('shop.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT p.name, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
-    purchases = cursor.fetchall()
-    conn.close()
-    if not purchases:
-        bot.send_message(message.chat.id, "You have not made any purchases yet\.")
-        return
-    text = "*📋 Your Purchase History*\n\n"
-    markup = types.InlineKeyboardMarkup()
-    status_emoji = {'pending': '⏳', 'completed': '✅'}
-    for purchase in purchases:
-        name, amount, date, token, payment_status = purchase
-        esc_name = escape_markdown(name)
-        text += f"📄 *{esc_name}*\n"
-        text += f"💰 {escape_markdown(format_price(amount))}\n"
-        text += f"💳 Status: {status_emoji.get(payment_status, '❓')} {escape_markdown(payment_status.title())}\n"
-        text += f"📅 {escape_markdown(date.split('.')[0])}\n"
-        if payment_status == 'completed':
-            markup.row(types.InlineKeyboardButton(f"📥 Download {name[:20]}", callback_data=f"download_{token}"))
-            text += "✅ Ready for download\n\n"
-        else:
-            text += f"⏳ Awaiting payment confirmation\.\n\n"
-    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="MarkdownV2")
-
-def support(message):
-     bot.send_message(message.chat.id, "💬 For any questions, please contact an admin\.")
-
-def show_balance_handler(message):
-    balance = get_user_balance(message.from_user.id)
-    bot.send_message(message.chat.id, f"💰 Your current balance is: *{escape_markdown(format_price(balance))}*", parse_mode="MarkdownV2")
-
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-    # This function needs to be fully implemented
-    pass
-
-def handle_download_callback(call, access_token):
-    # This function needs to be fully implemented
-    pass
-
-def handle_download(message, access_token):
-    # This function needs to be fully implemented
-    pass
-
-def show_external_payment_info(call, payment_method, product_id):
-    # This function needs to be fully implemented
-    pass
-
-if __name__ == "__main__":
-    init_database()
-    debug_print("Bot starting up...")
-    try:
-        while True:
-            try:
-                bot.infinity_polling(timeout=30, long_polling_timeout=15)
-            except Exception as e:
-                debug_print(f"Polling failed, restarting in 5 seconds: {e}")
-                time.sleep(5)
-    except Exception as e:
-        debug_print(f"An unexpected error occurred: {e}")
+def list_
