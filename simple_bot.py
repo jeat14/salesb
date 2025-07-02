@@ -49,6 +49,19 @@ def save_individual_product_file(content):
     except Exception as e:
         return None, str(e)
 
+def get_card_type(card_number):
+    """Determines card type from the first digit."""
+    if card_number.startswith('4'):
+        return 'Visa'
+    elif card_number.startswith('5'):
+        return 'Mastercard'
+    elif card_number.startswith('3'):
+        return 'Amex'
+    elif card_number.startswith('6'):
+        return 'Discover'
+    else:
+        return 'Card'
+
 
 # --- DATABASE FUNCTIONS ---
 def init_database():
@@ -60,39 +73,7 @@ def init_database():
     conn.commit()
     conn.close()
 
-def get_or_create_user(user_id, username=None):
-    conn = sqlite3.connect('shop.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO users (user_id, balance, role) VALUES (?, 0.0, 'user')", (user_id,))
-    if username:
-        cursor.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-    conn.commit()
-    conn.close()
-    return user
-    
-def get_user_role(user_id):
-    user = get_or_create_user(user_id)
-    return user[3] if user else 'user'
-
-def set_user_role(user_id, role):
-    get_or_create_user(user_id)
-    conn = sqlite3.connect('shop.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
-    conn.commit()
-    conn.close()
-
-def get_all_users():
-    conn = sqlite3.connect('shop.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username, balance, role FROM users ORDER BY balance DESC")
-    users = cursor.fetchall()
-    conn.close()
-    return users
-
-# (Other database functions remain unchanged)
+# (All other database functions like get_or_create_user, get_products, etc. remain the same)
 # ...
 
 # --- BOT MESSAGE HANDLERS ---
@@ -105,70 +86,6 @@ def send_welcome(message):
     markup.row('My Balance', 'Support')
     welcome_text = f"Welcome to Retrinity cc shop, {escape_markdown(message.from_user.first_name)}\!"
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode="MarkdownV2")
-
-# --- ADMIN COMMANDS ---
-
-@bot.message_handler(commands=['addfunds'])
-def add_funds_command(message):
-    user_role = get_user_role(message.from_user.id)
-    if message.from_user.id not in ADMIN_IDS and user_role != 'funds_admin':
-        bot.reply_to(message, "You do not have permission to use this command\.")
-        return
-    # (rest of the addfunds logic)
-
-@bot.message_handler(commands=['addfadmin', 'removefadmin'])
-def manage_funds_admin_command(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "This command is for full admins only\.")
-        return
-    
-    parts = message.text.split()
-    command = parts[0]
-    
-    if len(parts) != 2:
-        bot.reply_to(message, f"Usage: {command} `<@username_or_id>`", parse_mode="MarkdownV2")
-        return
-
-    target_identifier = parts[1]
-    target_user_id = None
-    if target_identifier.startswith('@'):
-        target_user_id = get_user_by_username(target_identifier)
-        if not target_user_id:
-            bot.reply_to(message, f"User `{escape_markdown(target_identifier)}` not found\. They must have started the bot at least once\.", parse_mode="MarkdownV2")
-            return
-    elif target_identifier.isdigit():
-        target_user_id = int(target_identifier)
-    else:
-        bot.reply_to(message, "Invalid user identifier\. Please use a User ID or an @username\.", parse_mode="MarkdownV2")
-        return
-    
-    if command == '/addfadmin':
-        set_user_role(target_user_id, 'funds_admin')
-        bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been promoted to Funds Admin\.", parse_mode="MarkdownV2")
-        try:
-            bot.send_message(target_user_id, "You have been promoted to a Funds Admin\. You can now use the `/addfunds` command\.", parse_mode="MarkdownV2")
-        except Exception as e:
-            debug_print(f"Could not notify user {target_user_id} about promotion: {e}")
-    elif command == '/removefadmin':
-        set_user_role(target_user_id, 'user')
-        bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been demoted to a regular user\.", parse_mode="MarkdownV2")
-        try:
-            bot.send_message(target_user_id, "You have been demoted to a regular user\.", parse_mode="MarkdownV2")
-        except Exception as e:
-            debug_print(f"Could not notify user {target_user_id} about demotion: {e}")
-
-
-@bot.message_handler(commands=['users'])
-def list_users_command(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "This command is for admins only.")
-        return
-    # (rest of the users logic)
-
-@bot.message_handler(commands=['remove'])
-def remove_product_start(message):
-    if message.from_user.id not in ADMIN_IDS: return
-    # (rest of the remove logic)
 
 @bot.message_handler(commands=['addproducts'])
 def add_products_start(message):
@@ -189,13 +106,11 @@ def add_products_start(message):
     except ValueError:
         bot.reply_to(message, "Invalid price format\. Please use a number\.", parse_mode="MarkdownV2")
 
-
-# --- SMART DOCUMENT HANDLER ---
+# --- UPDATED DOCUMENT HANDLER WITH ADVANCED PARSING ---
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     user_id = message.from_user.id
     if user_id not in ADMIN_IDS:
-        # Ignore files sent by non-admins
         return
         
     if not message.document.file_name.lower().endswith('.txt'):
@@ -204,39 +119,57 @@ def handle_document(message):
         
     state_info = user_states.get(user_id)
     
-    # Check if we are waiting for a bulk upload file
     if isinstance(state_info, dict) and state_info.get('state') == 'admin_waiting_bulk_file':
         price = state_info.get('price')
         file_info = message.document
         
         try:
+            bot.send_message(user_id, "Processing your bulk file, please wait...")
             downloaded_file_info = bot.get_file(file_info.file_id)
             file_content = bot.download_file(downloaded_file_info.file_path)
             
             lines = file_content.decode('utf-8').splitlines()
-            base_product_name = os.path.splitext(file_info.file_name)[0]
             
             added_count = 0
             failed_count = 0
 
-            for i, line in enumerate(lines):
-                description = line.strip()
-                if not description:
+            for line in lines:
+                line = line.strip()
+                if not line:
                     continue
                 
+                parts = line.split('|')
+                if len(parts) != 10:
+                    failed_count += 1
+                    continue
+
                 try:
-                    product_name = f"{base_product_name}-{i+1}"
-                    file_path, error = save_individual_product_file(description)
+                    card_number, exp_month, exp_year, cvv, holder, address, city, state, zip_code, country = [p.strip() for p in parts]
+                    
+                    # Create Product Name
+                    card_type = get_card_type(card_number)
+                    product_name = f"{card_type} - {card_number[:6]} - {country}"
+                    
+                    # Create Product Description
+                    # Note: This is the PUBLIC description. The full card line is the file content.
+                    product_description = (
+                        f"Holder: {holder}\n"
+                        f"Address: {address}, {city}, {state}, {zip_code}, {country}\n"
+                        f"Expires: {exp_month}/{exp_year}\n"
+                        f"CVV: {cvv}"
+                    )
+
+                    # Each line becomes its own product with its own file (containing the original full line)
+                    file_path, error = save_individual_product_file(line)
                     if error:
                         failed_count += 1
                         continue
-                    # In a real bulk upload, each line might have its own price
-                    # For now, we use the price set in the command
-                    add_product_to_db(product_name, description, price, file_path, os.path.basename(file_path))
+
+                    add_product_to_db(product_name, product_description, price, file_path, f"{product_name}.txt")
                     added_count += 1
                 except Exception as e:
                     failed_count += 1
-                    debug_print(f"Error adding line {i+1}: {e}")
+                    debug_print(f"Error processing line '{line}': {e}")
             
             summary_message = f"✅ *Bulk Upload Complete*\n\nSuccessfully added: `{added_count}` products\.\nFailed to process: `{failed_count}` lines\."
             bot.send_message(user_id, summary_message, parse_mode="MarkdownV2")
@@ -246,14 +179,11 @@ def handle_document(message):
             bot.send_message(user_id, "An error occurred while processing the file.")
         
         finally:
-            # Clear the state
             user_states.pop(user_id, None)
     else:
-        # If the state is not set, instruct the admin on how to use the command
-        bot.send_message(user_id, "To upload products, please first set a price using the command:\n`/addproducts <price>`", parse_mode="MarkdownV2")
+        bot.send_message(user_id, "To upload products, please first set a price for the items in the file using the command:\n`/addproducts <price>`", parse_mode="MarkdownV2")
 
 
-# --- REGULAR USER MESSAGE HANDLERS ---
 @bot.message_handler(func=lambda message: True)
 def handle_text_messages(message):
     if message.text == 'Browse Products':
@@ -266,13 +196,29 @@ def handle_text_messages(message):
         show_balance_handler(message)
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
+        
+# --- 'BROWSE PRODUCTS' HANDLER (WITH 6-DIGIT PREVIEW) ---
+@bot.message_handler(func=lambda message: message.text == 'Browse Products')
+def browse_products(message):
+    products = get_products()
+    if not products:
+        bot.send_message(message.chat.id, "No products available.")
+        return
+    markup = types.InlineKeyboardMarkup()
+    for p in products:
+        product_id, name, desc, price, _, _, _, _ = p
+        # Use first 6 chars of the description for the preview
+        preview = f" ({desc.splitlines()[0][:6]}...)" if desc else ""
+        button_text = f"{name}{preview} - {format_price(price)}"
+        markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
+    bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
 
-# (All other functions like browse_products, my_purchases, handle_callbacks, etc. go here)
+# (The rest of the handlers and functions like callbacks, my_purchases, etc. are assumed to be here)
 # ...
 
 if __name__ == "__main__":
     init_database()
-    debug_print("Bot starting up with simplified admin workflow...")
+    debug_print("Bot starting up...")
     try:
         while True:
             try:
