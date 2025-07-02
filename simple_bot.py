@@ -32,14 +32,12 @@ def format_price(price):
     return f"${price:.2f}"
 
 def escape_markdown(text: str) -> str:
-    """Helper function to escape telegram markdown V2 characters."""
     if not isinstance(text, str):
         text = str(text)
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def save_individual_product_file(content):
-    """Saves a string content to a new unique txt file."""
     secure_filename = f"{uuid.uuid4()}.txt"
     file_path = os.path.join(UPLOAD_FOLDER, secure_filename)
     try:
@@ -50,13 +48,11 @@ def save_individual_product_file(content):
         return None, str(e)
 
 def get_card_type(card_number):
-    """Determines card type from the first digit."""
     if card_number.startswith('4'): return 'Visa'
     elif card_number.startswith('5'): return 'Mastercard'
     elif card_number.startswith('3'): return 'Amex'
     elif card_number.startswith('6'): return 'Discover'
     else: return 'Card'
-
 
 # --- DATABASE FUNCTIONS ---
 def init_database():
@@ -207,15 +203,35 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['addfadmin', 'removefadmin'])
 def manage_funds_admin_command(message):
-    # This logic is for full admins to manage funds admins
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "This command is for full admins only\.")
         return
-    # ... (rest of logic from previous versions)
+    parts = message.text.split()
+    command = parts[0]
+    if len(parts) != 2:
+        bot.reply_to(message, f"Usage: {command} `<@username_or_id>`", parse_mode="MarkdownV2")
+        return
+    target_identifier = parts[1]
+    target_user_id = None
+    if target_identifier.startswith('@'):
+        target_user_id = get_user_by_username(target_identifier)
+        if not target_user_id:
+            bot.reply_to(message, f"User `{escape_markdown(target_identifier)}` not found\. They must have started the bot at least once\.", parse_mode="MarkdownV2")
+            return
+    elif target_identifier.isdigit():
+        target_user_id = int(target_identifier)
+    else:
+        bot.reply_to(message, "Invalid user identifier\. Please use a User ID or an @username\.", parse_mode="MarkdownV2")
+        return
+    if command == '/addfadmin':
+        set_user_role(target_user_id, 'funds_admin')
+        bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been promoted to Funds Admin\.", parse_mode="MarkdownV2")
+    elif command == '/removefadmin':
+        set_user_role(target_user_id, 'user')
+        bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been demoted to a regular user\.", parse_mode="MarkdownV2")
 
 @bot.message_handler(commands=['users', 'addfunds', 'remove'])
 def admin_commands(message):
-    # This groups several admin commands
     if message.text.startswith('/users'):
         if message.from_user.id not in ADMIN_IDS: return
         users = get_all_users()
@@ -234,7 +250,28 @@ def admin_commands(message):
         if message.from_user.id not in ADMIN_IDS and user_role != 'funds_admin':
              bot.reply_to(message, "You do not have permission to use this command\.")
              return
-        # (rest of addfunds logic)
+        parts = message.text.split()
+        if len(parts) != 3: bot.reply_to(message, "Usage:\n/addfunds `<@username_or_id> <amount>`", parse_mode="MarkdownV2"); return
+        target_identifier = parts[1]
+        target_user_id = None
+        if target_identifier.startswith('@'):
+            target_user_id = get_user_by_username(target_identifier)
+            if not target_user_id: bot.reply_to(message, f"User `{escape_markdown(target_identifier)}` not found\. They must have started the bot at least once\.", parse_mode="MarkdownV2"); return
+        elif target_identifier.isdigit():
+            target_user_id = int(target_identifier)
+        else:
+            bot.reply_to(message, "Invalid user identifier\. Please use a User ID or an @username\.", parse_mode="MarkdownV2"); return
+        try:
+            amount = float(parts[2])
+        except ValueError:
+            bot.reply_to(message, "Invalid Amount\. Please use a number\.", parse_mode="MarkdownV2"); return
+        update_user_balance(target_user_id, amount)
+        new_balance = get_user_balance(target_user_id)
+        bot.reply_to(message, f"✅ Successfully added `{escape_markdown(format_price(amount))}` to user `{escape_markdown(target_identifier)}`\.\nTheir new balance is: `{escape_markdown(format_price(new_balance))}`", parse_mode="MarkdownV2")
+        try:
+            bot.send_message(target_user_id, f"An admin has added `{escape_markdown(format_price(amount))}` to your balance\.\nYour new balance is: `{escape_markdown(format_price(new_balance))}`", parse_mode="MarkdownV2")
+        except Exception as e:
+            debug_print(f"Could not notify user {target_user_id} about added funds: {e}")
 
     elif message.text.startswith('/remove'):
         if message.from_user.id not in ADMIN_IDS: return
@@ -315,17 +352,19 @@ def browse_products(message):
 def my_purchases(message):
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT p.name, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
+    cursor.execute("SELECT p.name, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status, pu.payment_id FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
     purchases = cursor.fetchall()
     conn.close()
     if not purchases: bot.send_message(message.chat.id, "You have not made any purchases yet\."); return
     text = "*📋 Your Purchase History*\n\n"
     markup = types.InlineKeyboardMarkup()
     status_emoji = {'pending': '⏳', 'completed': '✅'}
-    for name, amount, date, token, payment_status in purchases:
-        text += f"📄 *{escape_markdown(name)}*\n"
+    for name, amount, date, token, payment_status, payment_id in purchases:
+        esc_name = escape_markdown(name)
+        text += f"📄 *{esc_name}*\n"
         text += f"💰 {escape_markdown(format_price(amount))}\n"
         text += f"💳 Status: {status_emoji.get(payment_status, '❓')} {escape_markdown(payment_status.title())}\n"
+        if payment_status == 'pending': text += f"Order ID: `{payment_id[:8]}`\n"
         text += f"📅 {escape_markdown(date.split('.')[0])}\n"
         if payment_status == 'completed':
             markup.row(types.InlineKeyboardButton(f"📥 Download {name[:20]}", callback_data=f"download_{token}"))
@@ -344,6 +383,7 @@ def show_balance_handler(message):
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     user_id = call.from_user.id
+    username = call.from_user.username
     try:
         if call.data.startswith('product_'):
             product_id = int(call.data.split('_')[1])
@@ -351,8 +391,7 @@ def handle_callbacks(call):
             if not product: bot.edit_message_text("Product not found\.", call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2"); return
             _, name, description, price, _, _, _, _ = product
             balance = get_user_balance(user_id)
-            esc_name = escape_markdown(name)
-            esc_desc = escape_markdown(description or "No description available\.")
+            esc_name, esc_desc = escape_markdown(name), escape_markdown(description or "No description available\.")
             desc_preview = f"{esc_desc[:6]}\.\.\." if len(esc_desc) > 6 else esc_desc
             product_text = f"📄 *{esc_name}*\n\n💰 *Price:* {escape_markdown(format_price(price))}\n📝 *Description:*\n{desc_preview}"
             markup = types.InlineKeyboardMarkup()
@@ -387,7 +426,7 @@ def handle_callbacks(call):
             if get_user_balance(user_id) >= price:
                 update_user_balance(user_id, -price)
                 new_balance = get_user_balance(user_id)
-                payment_id, access_token, _ = create_purchase(user_id, call.from_user.username, product_id, 'balance', price)
+                payment_id, access_token, _ = create_purchase(user_id, username, product_id, 'balance', price)
                 confirm_payment(payment_id)
                 deactivate_product_in_db(product_id)
                 success_text = f"✅ *Purchase Successful\!*\n\nYour new balance is *{escape_markdown(format_price(new_balance))}*\.\n\nHere is your download:"
@@ -411,8 +450,23 @@ def handle_callbacks(call):
             
         elif call.data.startswith('confirm_'):
             if user_id not in ADMIN_IDS: return
-            # ... confirmation logic ...
-            
+            payment_id = call.data.replace('confirm_', '')
+            purchase = get_purchase_by_payment_id(payment_id)
+            if not purchase: bot.answer_callback_query(call.id, "Purchase not found."); return
+            _, customer_user_id, product_id_to_deactivate, _, access_token, product_name = purchase
+            if confirm_payment(payment_id):
+                deactivate_product_in_db(product_id_to_deactivate)
+                bot.answer_callback_query(call.id, "✅ Payment confirmed!")
+                bot.edit_message_text(f"✅ Payment confirmed for order of *{escape_markdown(product_name)}*\.", call.message.chat.id, call.message.message_id, parse_mode="MarkdownV2")
+                try:
+                    markup = types.InlineKeyboardMarkup()
+                    markup.row(types.InlineKeyboardButton("📥 Download Now", callback_data=f"download_{access_token}"))
+                    bot.send_message(customer_user_id, f"🎉 Your payment for *{escape_markdown(product_name)}* has been confirmed\!\n\nYou can now download your file\.", reply_markup=markup, parse_mode="MarkdownV2")
+                except Exception as e:
+                    debug_print(f"Failed to notify customer {customer_user_id}: {e}")
+            else:
+                 bot.answer_callback_query(call.id, "❌ Failed to confirm payment")
+
         elif call.data == "back_products":
             bot.delete_message(call.message.chat.id, call.message.message_id)
             browse_products(call.message)
@@ -446,4 +500,35 @@ def show_external_payment_info(call, payment_method, product_id):
 
 def handle_download_callback(call, access_token):
     file_info = get_file_by_token(access_token)
-    if not file_info: bot.send_message(
+    if not file_info: bot.send_message(call.message.chat.id, "File not found or your payment is not yet confirmed\."); return
+    file_path, file_name = file_info
+    try:
+        with open(file_path, 'rb') as f:
+            bot.send_document(call.message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}", parse_mode="MarkdownV2")
+    except Exception as e:
+        debug_print(f"Download error: {str(e)}")
+        bot.send_message(call.message.chat.id, "Failed to send the file\. Please contact support\.")
+
+def handle_download(message, access_token):
+    file_info = get_file_by_token(access_token)
+    if not file_info: bot.send_message(message.chat.id, "File not found or your payment is not yet confirmed\."); return
+    file_path, file_name = file_info
+    try:
+        with open(file_path, 'rb') as f:
+            bot.send_document(message.chat.id, f, caption=f"Thank you for your purchase\!\n\n📁 {escape_markdown(file_name)}", parse_mode="MarkdownV2")
+    except Exception as e:
+        debug_print(f"Download error: {str(e)}")
+        bot.send_message(message.chat.id, "Failed to send the file\. Please contact support\.")
+
+if __name__ == "__main__":
+    init_database()
+    debug_print("Bot starting up...")
+    try:
+        while True:
+            try:
+                bot.infinity_polling(timeout=30, long_polling_timeout=15)
+            except Exception as e:
+                debug_print(f"Polling failed, restarting in 5 seconds: {e}")
+                time.sleep(5)
+    except Exception as e:
+        debug_print(f"An unexpected error occurred: {e}")
