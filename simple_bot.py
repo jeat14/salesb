@@ -51,17 +51,11 @@ def save_individual_product_file(content):
 
 def get_card_type(card_number):
     """Determines card type from the first digit."""
-    if card_number.startswith('4'):
-        return 'Visa'
-    elif card_number.startswith('5'):
-        return 'Mastercard'
-    elif card_number.startswith('3'):
-        return 'Amex'
-    elif card_number.startswith('6'):
-        return 'Discover'
-    else:
-        return 'Card'
-
+    if card_number.startswith('4'): return 'Visa'
+    elif card_number.startswith('5'): return 'Mastercard'
+    elif card_number.startswith('3'): return 'Amex'
+    elif card_number.startswith('6'): return 'Discover'
+    else: return 'Card'
 
 # --- DATABASE FUNCTIONS ---
 def init_database():
@@ -73,7 +67,34 @@ def init_database():
     conn.commit()
     conn.close()
 
-# (All other database functions like get_or_create_user, get_products, etc. remain the same)
+def get_or_create_user(user_id, username=None):
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, balance, role) VALUES (?, 0.0, 'user')", (user_id,))
+    if username:
+        cursor.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    user = cursor.fetchone()
+    conn.commit()
+    conn.close()
+    return user
+    
+def get_user_role(user_id):
+    user = get_or_create_user(user_id)
+    return user[3] if user else 'user'
+
+def set_user_role(user_id, role):
+    get_or_create_user(user_id)
+    conn = sqlite3.connect('shop.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
+    conn.commit()
+    conn.close()
+
+# (Other DB functions...)
+def get_all_users():
+    # ...
+    pass
 # ...
 
 # --- BOT MESSAGE HANDLERS ---
@@ -85,47 +106,78 @@ def send_welcome(message):
     markup.row('Browse Products', 'My Purchases')
     markup.row('My Balance', 'Support')
     welcome_text = f"Welcome to Retrinity cc shop, {escape_markdown(message.from_user.first_name)}\!"
+    if message.from_user.id in ADMIN_IDS:
+        welcome_text += "\n\n*Admin tip:* To add products, just upload a `\.txt` file\. To add funds, use `/addfunds`\."
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode="MarkdownV2")
 
-@bot.message_handler(commands=['addproducts'])
-def add_products_start(message):
-    if message.from_user.id not in ADMIN_IDS: return
-    
-    parts = message.text.split()
-    if len(parts) != 2:
-        bot.reply_to(message, "Usage: /addproducts `<price>`\nThen, upload your `\.txt` file\.", parse_mode="MarkdownV2")
+@bot.message_handler(commands=['addfunds'])
+def add_funds_command(message):
+    user_role = get_user_role(message.from_user.id)
+    if message.from_user.id not in ADMIN_IDS and user_role != 'funds_admin':
+        bot.reply_to(message, "You do not have permission to use this command\.")
         return
-    
-    try:
-        price = float(parts[1])
-        if price <= 0:
-            bot.reply_to(message, "Price must be a positive number\.")
-            return
-        user_states[message.from_user.id] = {'state': 'admin_waiting_bulk_file', 'price': price}
-        bot.reply_to(message, f"Ready to add products at a price of *{escape_markdown(format_price(price))}* each\. Now, please upload your `\.txt` file\.", parse_mode="MarkdownV2")
-    except ValueError:
-        bot.reply_to(message, "Invalid price format\. Please use a number\.", parse_mode="MarkdownV2")
+    # (rest of addfunds logic...)
 
-# --- UPDATED DOCUMENT HANDLER WITH ADVANCED PARSING ---
+@bot.message_handler(commands=['addfadmin', 'removefadmin'])
+def manage_funds_admin_command(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    # (rest of fadmin logic...)
+
+@bot.message_handler(commands=['users'])
+def list_users_command(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    # (rest of users logic...)
+
+@bot.message_handler(commands=['remove'])
+def remove_product_start(message):
+    if message.from_user.id not in ADMIN_IDS: return
+    # (rest of remove logic...)
+
+
+# --- NEW, SIMPLIFIED UPLOAD FLOW ---
+
 @bot.message_handler(content_types=['document'])
-def handle_document(message):
+def handle_document_upload(message):
     user_id = message.from_user.id
     if user_id not in ADMIN_IDS:
+        # Ignore files sent by non-admins
         return
         
     if not message.document.file_name.lower().endswith('.txt'):
         bot.send_message(user_id, "Error: Only .txt files are accepted.")
         return
-        
-    state_info = user_states.get(user_id)
     
-    if isinstance(state_info, dict) and state_info.get('state') == 'admin_waiting_bulk_file':
-        price = state_info.get('price')
-        file_info = message.document
-        
+    # Save the file ID and ask for the price
+    user_states[user_id] = {
+        'state': 'admin_waiting_price_for_bulk_upload',
+        'file_id': message.document.file_id,
+        'file_name': message.document.file_name
+    }
+    bot.send_message(user_id, f"File `{escape_markdown(message.document.file_name)}` received\. Please reply with the price for each item in this file\.", parse_mode="MarkdownV2")
+
+@bot.message_handler(func=lambda message: True)
+def handle_all_text(message):
+    user_id = message.from_user.id
+    state_info = user_states.get(user_id)
+
+    # Check if this message is a price for a pending bulk upload
+    if isinstance(state_info, dict) and state_info.get('state') == 'admin_waiting_price_for_bulk_upload':
         try:
-            bot.send_message(user_id, "Processing your bulk file, please wait...")
-            downloaded_file_info = bot.get_file(file_info.file_id)
+            price = float(message.text.strip())
+            if price <= 0:
+                bot.reply_to(message, "Price must be a positive number.")
+                return
+        except ValueError:
+            bot.reply_to(message, "Invalid price format. Please send only a number.")
+            return
+
+        # We have the price, now process the file
+        bot.send_message(user_id, "Processing your bulk file, please wait...")
+        try:
+            file_id = state_info['file_id']
+            base_product_name = os.path.splitext(state_info['file_name'])[0]
+            
+            downloaded_file_info = bot.get_file(file_id)
             file_content = bot.download_file(downloaded_file_info.file_path)
             
             lines = file_content.decode('utf-8').splitlines()
@@ -133,7 +185,7 @@ def handle_document(message):
             added_count = 0
             failed_count = 0
 
-            for line in lines:
+            for i, line in enumerate(lines):
                 line = line.strip()
                 if not line:
                     continue
@@ -146,20 +198,11 @@ def handle_document(message):
                 try:
                     card_number, exp_month, exp_year, cvv, holder, address, city, state, zip_code, country = [p.strip() for p in parts]
                     
-                    # Create Product Name
                     card_type = get_card_type(card_number)
                     product_name = f"{card_type} - {card_number[:6]} - {country}"
                     
-                    # Create Product Description
-                    # Note: This is the PUBLIC description. The full card line is the file content.
-                    product_description = (
-                        f"Holder: {holder}\n"
-                        f"Address: {address}, {city}, {state}, {zip_code}, {country}\n"
-                        f"Expires: {exp_month}/{exp_year}\n"
-                        f"CVV: {cvv}"
-                    )
+                    product_description = f"Holder: {holder}\nAddress: {address}, {city}, {state}, {zip_code}, {country}\nExpires: {exp_month}/{exp_year}\nCVV: {cvv}"
 
-                    # Each line becomes its own product with its own file (containing the original full line)
                     file_path, error = save_individual_product_file(line)
                     if error:
                         failed_count += 1
@@ -180,13 +223,9 @@ def handle_document(message):
         
         finally:
             user_states.pop(user_id, None)
-    else:
-        bot.send_message(user_id, "To upload products, please first set a price for the items in the file using the command:\n`/addproducts <price>`", parse_mode="MarkdownV2")
 
-
-@bot.message_handler(func=lambda message: True)
-def handle_text_messages(message):
-    if message.text == 'Browse Products':
+    # If not a special state, handle regular menu buttons
+    elif message.text == 'Browse Products':
         browse_products(message)
     elif message.text == 'My Purchases':
         my_purchases(message)
@@ -196,9 +235,8 @@ def handle_text_messages(message):
         show_balance_handler(message)
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
-        
-# --- 'BROWSE PRODUCTS' HANDLER (WITH 6-DIGIT PREVIEW) ---
-@bot.message_handler(func=lambda message: message.text == 'Browse Products')
+
+# --- BROWSE PRODUCTS HANDLER (WITH 6-DIGIT PREVIEW) ---
 def browse_products(message):
     products = get_products()
     if not products:
@@ -207,14 +245,13 @@ def browse_products(message):
     markup = types.InlineKeyboardMarkup()
     for p in products:
         product_id, name, desc, price, _, _, _, _ = p
-        # Use first 6 chars of the description for the preview
-        preview = f" ({desc.splitlines()[0][:6]}...)" if desc else ""
-        button_text = f"{name}{preview} - {format_price(price)}"
+        # Use first 6 chars of the product name for the preview, as the description is long
+        preview = f" ({name[:6]}...)"
+        button_text = f"{name} - {format_price(price)}" # Preview removed for clarity, name is descriptive enough
         markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
     bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
-
-# (The rest of the handlers and functions like callbacks, my_purchases, etc. are assumed to be here)
-# ...
+    
+# (Callbacks and other handlers would go here...)
 
 if __name__ == "__main__":
     init_database()
