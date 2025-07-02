@@ -32,14 +32,12 @@ def format_price(price):
     return f"${price:.2f}"
 
 def escape_markdown(text: str) -> str:
-    """Helper function to escape telegram markdown V2 characters."""
     if not isinstance(text, str):
         text = str(text)
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def save_individual_product_file(content):
-    """Saves a string content to a new unique txt file."""
     secure_filename = f"{uuid.uuid4()}.txt"
     file_path = os.path.join(UPLOAD_FOLDER, secure_filename)
     try:
@@ -50,13 +48,11 @@ def save_individual_product_file(content):
         return None, str(e)
 
 def get_card_type(card_number):
-    """Determines card type from the first digit."""
     if card_number.startswith('4'): return 'Visa'
     elif card_number.startswith('5'): return 'Mastercard'
     elif card_number.startswith('3'): return 'Amex'
     elif card_number.startswith('6'): return 'Discover'
     else: return 'Card'
-
 
 # --- DATABASE FUNCTIONS ---
 def init_database():
@@ -79,7 +75,7 @@ def get_or_create_user(user_id, username=None):
     conn.commit()
     conn.close()
     return user
-    
+
 def get_user_role(user_id):
     user = get_or_create_user(user_id)
     return user[3] if user else 'user'
@@ -191,7 +187,6 @@ def get_file_by_token(access_token):
     conn.close()
     return res
 
-
 # --- BOT MESSAGE HANDLERS ---
 
 @bot.message_handler(commands=['start'])
@@ -270,4 +265,23 @@ def manage_funds_admin_command(message):
         bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been demoted to a regular user\.", parse_mode="MarkdownV2")
 
 @bot.message_handler(commands=['users'])
-def list_
+def list_users_command(message):
+    if message.from_user.id not in ADMIN_IDS:
+        bot.reply_to(message, "This command is for admins only.")
+        return
+    users = get_all_users()
+    if not users:
+        bot.reply_to(message, "No users have interacted with the bot yet.")
+        return
+    file_content = "User ID,Username,Balance,Role\n"
+    for user in users:
+        user_id, username, balance, role = user
+        file_content += f"{user_id},{username or 'N/A'},{balance:.2f},{role}\n"
+    try:
+        with open("user_list.csv", "w", encoding="utf-8") as file:
+            file.write(file_content)
+        with open("user_list.csv", "rb") as file:
+            bot.send_document(message.chat.id, file, caption="Here is the list of all bot users.")
+        os.remove("user_list.csv")
+    except Exception as e:
+        debug_print(f"Failed to send user list file: {e}")
