@@ -32,14 +32,12 @@ def format_price(price):
     return f"${price:.2f}"
 
 def escape_markdown(text: str) -> str:
-    """Helper function to escape telegram markdown V2 characters."""
     if not isinstance(text, str):
         text = str(text)
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def save_individual_product_file(content):
-    """Saves a string content to a new unique txt file."""
     secure_filename = f"{uuid.uuid4()}.txt"
     file_path = os.path.join(UPLOAD_FOLDER, secure_filename)
     try:
@@ -50,13 +48,11 @@ def save_individual_product_file(content):
         return None, str(e)
 
 def get_card_type(card_number):
-    """Determines card type from the first digit."""
     if card_number.startswith('4'): return 'Visa'
     elif card_number.startswith('5'): return 'Mastercard'
     elif card_number.startswith('3'): return 'Amex'
     elif card_number.startswith('6'): return 'Discover'
     else: return 'Card'
-
 
 # --- DATABASE FUNCTIONS ---
 def init_database():
@@ -191,6 +187,7 @@ def get_file_by_token(access_token):
     conn.close()
     return res
 
+
 # --- BOT MESSAGE HANDLERS ---
 
 @bot.message_handler(commands=['start'])
@@ -200,14 +197,9 @@ def send_welcome(message):
     markup.row('Browse Products', 'My Purchases')
     markup.row('My Balance', 'Support')
     welcome_text = f"Welcome to Retrinity cc shop, {escape_markdown(message.from_user.first_name)}\!"
-    
-    # Add a special tip for admins
     if message.from_user.id in ADMIN_IDS:
-        welcome_text += "\n\n*Admin tip:* To add items, upload a `\.txt` file\. Use `/addfunds` to manage balances\."
-
+        welcome_text += "\n\n*Admin tip:* To add products, just upload a `\.txt` file\. Use `/addfunds` to manage balances\."
     bot.reply_to(message, welcome_text, reply_markup=markup, parse_mode="MarkdownV2")
-
-# --- ADMIN COMMANDS ---
 
 @bot.message_handler(commands=['addfunds'])
 def add_funds_command(message):
@@ -309,7 +301,6 @@ def remove_product_start(message):
     markup.row(types.InlineKeyboardButton("🔙 Cancel", callback_data="cancel_action"))
     bot.send_message(message.chat.id, "Select a product to remove from the shop:", reply_markup=markup)
 
-# --- Document Handler for Admins ---
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     if message.from_user.id not in ADMIN_IDS: return
@@ -372,6 +363,7 @@ def handle_text(message):
             bot.send_message(user_id, "An error occurred while processing the file.")
         finally:
             user_states.pop(user_id, None)
+
     elif message.text == 'Browse Products':
         browse_products(message)
     elif message.text == 'My Purchases':
@@ -390,15 +382,14 @@ def browse_products(message):
         return
     markup = types.InlineKeyboardMarkup()
     for p in products:
-        product_id, name, desc, price, _, _, _, _ = p
-        button_text = f"{name} - {format_price(price)}"
-        markup.row(types.InlineKeyboardButton(button_text, callback_data=f"product_{product_id}"))
+        product_id, name, _, price, _, _, _, _ = p
+        markup.row(types.InlineKeyboardButton(f"{name} - {format_price(price)}", callback_data=f"product_{product_id}"))
     bot.send_message(message.chat.id, "Available Products:", reply_markup=markup)
 
 def my_purchases(message):
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
-    cursor.execute("SELECT p.name, p.description, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
+    cursor.execute("SELECT p.name, pu.amount, pu.purchase_date, pu.access_token, pu.payment_status FROM purchases pu JOIN products p ON pu.product_id = p.id WHERE pu.user_id = ? ORDER BY pu.purchase_date DESC", (message.from_user.id,))
     purchases = cursor.fetchall()
     conn.close()
     if not purchases:
@@ -408,7 +399,7 @@ def my_purchases(message):
     markup = types.InlineKeyboardMarkup()
     status_emoji = {'pending': '⏳', 'completed': '✅'}
     for purchase in purchases:
-        name, description, amount, date, token, payment_status = purchase
+        name, amount, date, token, payment_status = purchase
         esc_name = escape_markdown(name)
         text += f"📄 *{esc_name}*\n"
         text += f"💰 {escape_markdown(format_price(amount))}\n"
@@ -422,9 +413,28 @@ def my_purchases(message):
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="MarkdownV2")
 
 def support(message):
-     bot.send_message(message.chat.id, "💬 For any questions, please contact an admin\. You can find a list of admins if you have permission\.")
+     bot.send_message(message.chat.id, "💬 For any questions, please contact an admin\.")
 
-# (And so on for callbacks and other functions)
+def show_balance_handler(message):
+    balance = get_user_balance(message.from_user.id)
+    bot.send_message(message.chat.id, f"💰 Your current balance is: *{escape_markdown(format_price(balance))}*", parse_mode="MarkdownV2")
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callbacks(call):
+    # This function needs to be fully implemented
+    pass
+
+def handle_download_callback(call, access_token):
+    # This function needs to be fully implemented
+    pass
+
+def handle_download(message, access_token):
+    # This function needs to be fully implemented
+    pass
+
+def show_external_payment_info(call, payment_method, product_id):
+    # This function needs to be fully implemented
+    pass
 
 if __name__ == "__main__":
     init_database()
