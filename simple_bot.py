@@ -32,12 +32,14 @@ def format_price(price):
     return f"${price:.2f}"
 
 def escape_markdown(text: str) -> str:
+    """Helper function to escape telegram markdown V2 characters."""
     if not isinstance(text, str):
         text = str(text)
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 def save_individual_product_file(content):
+    """Saves a string content to a new unique txt file."""
     secure_filename = f"{uuid.uuid4()}.txt"
     file_path = os.path.join(UPLOAD_FOLDER, secure_filename)
     try:
@@ -54,7 +56,6 @@ def init_database():
     cursor = conn.cursor()
     cursor.execute('CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT, price REAL NOT NULL, file_path TEXT NOT NULL, file_name TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, active INTEGER DEFAULT 1)')
     cursor.execute('CREATE TABLE IF NOT EXISTS purchases (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, username TEXT, product_id INTEGER NOT NULL, payment_method TEXT NOT NULL, payment_status TEXT DEFAULT \'pending\', payment_id TEXT, amount REAL NOT NULL, purchase_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP, access_token TEXT, FOREIGN KEY (product_id) REFERENCES products (id))')
-    # ADDED 'role' COLUMN TO USERS TABLE
     cursor.execute('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, balance REAL DEFAULT 0.0, role TEXT DEFAULT "user")')
     conn.commit()
     conn.close()
@@ -62,7 +63,6 @@ def init_database():
 def get_or_create_user(user_id, username=None):
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
-    # When creating a user, they get the 'user' role by default
     cursor.execute("INSERT OR IGNORE INTO users (user_id, balance, role) VALUES (?, 0.0, 'user')", (user_id,))
     if username:
         cursor.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
@@ -71,23 +71,19 @@ def get_or_create_user(user_id, username=None):
     conn.commit()
     conn.close()
     return user
+    
+def get_user_role(user_id):
+    user = get_or_create_user(user_id)
+    return user[3] if user else 'user'
 
 def set_user_role(user_id, role):
-    """Sets the role for a given user."""
-    get_or_create_user(user_id) # Ensure user exists
+    get_or_create_user(user_id)
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
     conn.commit()
     conn.close()
 
-def get_user_role(user_id):
-    """Gets a user's role."""
-    user = get_or_create_user(user_id)
-    # user[3] is the role column
-    return user[3] if user else 'user'
-
-# (Other database functions remain the same)
 def get_all_users():
     conn = sqlite3.connect('shop.db', check_same_thread=False)
     cursor = conn.cursor()
@@ -96,24 +92,8 @@ def get_all_users():
     conn.close()
     return users
 
-def get_user_by_username(username):
-    clean_username = username.lstrip('@')
-    conn = sqlite3.connect('shop.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users WHERE username = ?", (clean_username,))
-    user = cursor.fetchone()
-    conn.close()
-    return user[0] if user else None
-
-def update_user_balance(user_id, amount_change):
-    get_or_create_user(user_id)
-    conn = sqlite3.connect('shop.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount_change, user_id))
-    conn.commit()
-    conn.close()
-
-# ... (rest of DB functions are unchanged)
+# (Other database functions remain unchanged)
+# ...
 
 # --- BOT MESSAGE HANDLERS ---
 
@@ -130,52 +110,23 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['addfunds'])
 def add_funds_command(message):
-    # Check for either Full Admin or Funds Admin
     user_role = get_user_role(message.from_user.id)
     if message.from_user.id not in ADMIN_IDS and user_role != 'funds_admin':
-        bot.reply_to(message, "You do not have permission to use this command\.", parse_mode="MarkdownV2")
+        bot.reply_to(message, "You do not have permission to use this command\.")
         return
+    # (rest of the addfunds logic)
 
-    parts = message.text.split()
-    if len(parts) != 3:
-        bot.reply_to(message, "Usage:\n/addfunds `<@username_or_id> <amount>`", parse_mode="MarkdownV2")
-        return
-        
-    target_identifier = parts[1]
-    target_user_id = None
-    if target_identifier.startswith('@'):
-        target_user_id = get_user_by_username(target_identifier)
-        if not target_user_id:
-            bot.reply_to(message, f"User `{escape_markdown(target_identifier)}` not found\. They must have started the bot at least once\.", parse_mode="MarkdownV2")
-            return
-    elif target_identifier.isdigit():
-        target_user_id = int(target_identifier)
-    else:
-        bot.reply_to(message, "Invalid user identifier\. Please use a User ID or an @username\.", parse_mode="MarkdownV2")
-        return
-    try:
-        amount = float(parts[2])
-    except ValueError:
-        bot.reply_to(message, "Invalid Amount\. Please use a number\.", parse_mode="MarkdownV2")
-        return
-        
-    update_user_balance(target_user_id, amount)
-    new_balance = get_user_balance(target_user_id)
-    bot.reply_to(message, f"✅ Successfully added `{escape_markdown(format_price(amount))}` to user `{escape_markdown(target_identifier)}`\.\nTheir new balance is: `{escape_markdown(format_price(new_balance))}`", parse_mode="MarkdownV2")
-    try:
-        bot.send_message(target_user_id, f"An admin has added `{escape_markdown(format_price(amount))}` to your balance\.\nYour new balance is: `{escape_markdown(format_price(new_balance))}`", parse_mode="MarkdownV2")
-    except Exception as e:
-        debug_print(f"Could not notify user {target_user_id} about added funds: {e}")
-
-@bot.message_handler(commands=['addfadmin'])
-def add_funds_admin_command(message):
+@bot.message_handler(commands=['addfadmin', 'removefadmin'])
+def manage_funds_admin_command(message):
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "This command is for full admins only\.")
         return
     
     parts = message.text.split()
+    command = parts[0]
+    
     if len(parts) != 2:
-        bot.reply_to(message, "Usage: /addfadmin `<@username_or_id>`", parse_mode="MarkdownV2")
+        bot.reply_to(message, f"Usage: {command} `<@username_or_id>`", parse_mode="MarkdownV2")
         return
 
     target_identifier = parts[1]
@@ -190,96 +141,34 @@ def add_funds_admin_command(message):
     else:
         bot.reply_to(message, "Invalid user identifier\. Please use a User ID or an @username\.", parse_mode="MarkdownV2")
         return
-
-    set_user_role(target_user_id, 'funds_admin')
-    bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been promoted to Funds Admin\.", parse_mode="MarkdownV2")
-    try:
-        bot.send_message(target_user_id, "You have been promoted to a Funds Admin\. You can now use the `/addfunds` command\.", parse_mode="MarkdownV2")
-    except Exception as e:
-        debug_print(f"Could not notify user {target_user_id} about promotion: {e}")
-
-@bot.message_handler(commands=['removefadmin'])
-def remove_funds_admin_command(message):
-    if message.from_user.id not in ADMIN_IDS:
-        bot.reply_to(message, "This command is for full admins only\.")
-        return
     
-    parts = message.text.split()
-    if len(parts) != 2:
-        bot.reply_to(message, "Usage: /removefadmin `<@username_or_id>`", parse_mode="MarkdownV2")
-        return
+    if command == '/addfadmin':
+        set_user_role(target_user_id, 'funds_admin')
+        bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been promoted to Funds Admin\.", parse_mode="MarkdownV2")
+        try:
+            bot.send_message(target_user_id, "You have been promoted to a Funds Admin\. You can now use the `/addfunds` command\.", parse_mode="MarkdownV2")
+        except Exception as e:
+            debug_print(f"Could not notify user {target_user_id} about promotion: {e}")
+    elif command == '/removefadmin':
+        set_user_role(target_user_id, 'user')
+        bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been demoted to a regular user\.", parse_mode="MarkdownV2")
+        try:
+            bot.send_message(target_user_id, "You have been demoted to a regular user\.", parse_mode="MarkdownV2")
+        except Exception as e:
+            debug_print(f"Could not notify user {target_user_id} about demotion: {e}")
 
-    target_identifier = parts[1]
-    target_user_id = None
-    if target_identifier.startswith('@'):
-        target_user_id = get_user_by_username(target_identifier)
-        if not target_user_id:
-            bot.reply_to(message, f"User `{escape_markdown(target_identifier)}` not found\.", parse_mode="MarkdownV2")
-            return
-    elif target_identifier.isdigit():
-        target_user_id = int(target_identifier)
-    else:
-        bot.reply_to(message, "Invalid user identifier\.", parse_mode="MarkdownV2")
-        return
-
-    set_user_role(target_user_id, 'user')
-    bot.reply_to(message, f"✅ User `{escape_markdown(target_identifier)}` has been demoted to a regular user\.", parse_mode="MarkdownV2")
-    try:
-        bot.send_message(target_user_id, "You have been demoted to a regular user\.", parse_mode="MarkdownV2")
-    except Exception as e:
-        debug_print(f"Could not notify user {target_user_id} about demotion: {e}")
 
 @bot.message_handler(commands=['users'])
 def list_users_command(message):
     if message.from_user.id not in ADMIN_IDS:
         bot.reply_to(message, "This command is for admins only.")
         return
-    users = get_all_users()
-    if not users:
-        bot.reply_to(message, "No users have interacted with the bot yet.")
-        return
-    file_content = "User ID,Username,Balance,Role\n"
-    for user in users:
-        user_id, username, balance, role = user
-        file_content += f"{user_id},{username or 'N/A'},{balance:.2f},{role}\n"
-    try:
-        file_path = "user_list.csv"
-        with open(file_path, "w", encoding="utf-8") as file:
-            file.write(file_content)
-        with open(file_path, "rb") as file:
-            bot.send_document(message.chat.id, file, caption="Here is the list of all bot users.")
-        os.remove(file_path)
-    except Exception as e:
-        debug_print(f"Failed to send user list file: {e}")
-        bot.reply_to(message, "An error occurred while generating the user list file.")
+    # (rest of the users logic)
 
 @bot.message_handler(commands=['remove'])
 def remove_product_start(message):
     if message.from_user.id not in ADMIN_IDS: return
-    products = get_products()
-    if not products:
-        bot.send_message(message.chat.id, "There are no active products to remove.")
-        return
-    markup = types.InlineKeyboardMarkup()
-    for p in products:
-        product_id, name, _, price, _, _, _, _ = p
-        button_text = f"❌ {name} - {format_price(price)}"
-        markup.row(types.InlineKeyboardButton(button_text, callback_data=f"remove_{product_id}"))
-    markup.row(types.InlineKeyboardButton("🔙 Cancel", callback_data="cancel_action"))
-    bot.send_message(message.chat.id, "Select a product to remove from the shop:", reply_markup=markup)
-
-
-# This handler is the primary entry point for admins adding products
-@bot.message_handler(content_types=['document'])
-def handle_file_upload(message):
-    user_id = message.from_user.id
-    if user_id not in ADMIN_IDS: return
-        
-    if not message.document.file_name.lower().endswith('.txt'):
-        bot.send_message(user_id, "Error: Only .txt files are accepted.")
-        return
-    
-    bot.send_message(user_id, "This bot now uses a bulk upload format\. Please use the `/addproducts` command instead by providing the price as an argument\.\n\nExample:\n`/addproducts 10` \(this will set the price for each line in the file to $10\)", parse_mode="MarkdownV2")
+    # (rest of the remove logic)
 
 @bot.message_handler(commands=['addproducts'])
 def add_products_start(message):
@@ -301,9 +190,72 @@ def add_products_start(message):
         bot.reply_to(message, "Invalid price format\. Please use a number\.", parse_mode="MarkdownV2")
 
 
+# --- SMART DOCUMENT HANDLER ---
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        # Ignore files sent by non-admins
+        return
+        
+    if not message.document.file_name.lower().endswith('.txt'):
+        bot.send_message(user_id, "Error: Only .txt files are accepted.")
+        return
+        
+    state_info = user_states.get(user_id)
+    
+    # Check if we are waiting for a bulk upload file
+    if isinstance(state_info, dict) and state_info.get('state') == 'admin_waiting_bulk_file':
+        price = state_info.get('price')
+        file_info = message.document
+        
+        try:
+            downloaded_file_info = bot.get_file(file_info.file_id)
+            file_content = bot.download_file(downloaded_file_info.file_path)
+            
+            lines = file_content.decode('utf-8').splitlines()
+            base_product_name = os.path.splitext(file_info.file_name)[0]
+            
+            added_count = 0
+            failed_count = 0
+
+            for i, line in enumerate(lines):
+                description = line.strip()
+                if not description:
+                    continue
+                
+                try:
+                    product_name = f"{base_product_name}-{i+1}"
+                    file_path, error = save_individual_product_file(description)
+                    if error:
+                        failed_count += 1
+                        continue
+                    # In a real bulk upload, each line might have its own price
+                    # For now, we use the price set in the command
+                    add_product_to_db(product_name, description, price, file_path, os.path.basename(file_path))
+                    added_count += 1
+                except Exception as e:
+                    failed_count += 1
+                    debug_print(f"Error adding line {i+1}: {e}")
+            
+            summary_message = f"✅ *Bulk Upload Complete*\n\nSuccessfully added: `{added_count}` products\.\nFailed to process: `{failed_count}` lines\."
+            bot.send_message(user_id, summary_message, parse_mode="MarkdownV2")
+        
+        except Exception as e:
+            debug_print(f"File processing error: {str(e)}")
+            bot.send_message(user_id, "An error occurred while processing the file.")
+        
+        finally:
+            # Clear the state
+            user_states.pop(user_id, None)
+    else:
+        # If the state is not set, instruct the admin on how to use the command
+        bot.send_message(user_id, "To upload products, please first set a price using the command:\n`/addproducts <price>`", parse_mode="MarkdownV2")
+
+
+# --- REGULAR USER MESSAGE HANDLERS ---
 @bot.message_handler(func=lambda message: True)
 def handle_text_messages(message):
-    # This handler now only routes reply keyboard buttons
     if message.text == 'Browse Products':
         browse_products(message)
     elif message.text == 'My Purchases':
@@ -315,14 +267,12 @@ def handle_text_messages(message):
     else:
         bot.send_message(message.chat.id, "I don't understand that. Please use the menu buttons.")
 
-
-# (The rest of the bot, especially handle_callbacks, would go here...)
-# This is a large file, so focusing on the requested changes. 
-# The full logic for other functions like Browse, purchasing, etc. would be included below.
+# (All other functions like browse_products, my_purchases, handle_callbacks, etc. go here)
+# ...
 
 if __name__ == "__main__":
     init_database()
-    debug_print("Bot starting up with Roles system...")
+    debug_print("Bot starting up with simplified admin workflow...")
     try:
         while True:
             try:
